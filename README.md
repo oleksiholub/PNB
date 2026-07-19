@@ -1,7 +1,7 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step E.1.
+репозитория после завершения Sub-step E.2.
 
 ## Статус
 
@@ -9,10 +9,12 @@
 - ✅ Итерация B завершена (B.1–B.3)
 - ✅ Итерация C завершена (C.1–C.2)
 - ✅ Итерация D завершена целиком (D.1–D.5)
-- 🔶 Итерация E начата: **Sub-step E.1** — LangGraph.js-пайплайн
-  суммаризации/извлечения сущностей (`summarizationService.ts`),
-  триггер каждые 5 захваченных сообщений, repair-pass/
-  RAW_FALLBACK при невалидном выводе.
+- 🔶 Итерация E в процессе (E.1–E.2 готовы, E.3 впереди):
+  - E.1 — LangGraph.js-пайплайн суммаризации/извлечения сущностей
+  - **E.2 — `POST /handoff`**: Cross-Chat Handoff, копирование сжатого
+    `memory_blob` из `source_chat_id` в `target_chat_id`, ownership
+    checks на оба чата, идемпотентность через provenance-маркер
+    `[HANDOFF_FROM:<source_chat_id>]`
 - GitHub push-пайплайн, полноценная retry-очередь с backoff — далее (Итерация F, H).
 
 ## ⚠️ Открытые компромиссы, требующие внимания
@@ -20,12 +22,15 @@
 1. **Security TODO (D.5)**: временное хранение email/password для
    Firebase-авторизации в `chrome.storage.local`. Требует ревью Security
    Thread перед rollout.
-2. **Interim summarizer (E.1)**: ТЗ требует LangGraph.js-оркестрацию, но
-   не специфицирует LLM-провайдера/API-ключ для самой суммаризации.
-   E.1 использует экстрактивные heuristics (regex-based entity/action
-   extraction) как временный placeholder, соответствующий форме
-   `memory_blob`, но не являющийся генеративной суммаризацией. Требует
-   решения оператора о выборе модели/API до production.
+2. **Interim summarizer (E.1)**: экстрактивные heuristics вместо
+   генеративного LLM для суммаризации — требует решения оператора о
+   провайдере/API до production.
+3. **Request shape для `POST /handoff` (E.2) не специфицирован в ТЗ**:
+   ТЗ (раздел 3.3) описывает только триггер (handoff_trigger_marker) и
+   цель (перенос сжатого memory state), но не называет поля запроса.
+   Схема `source_chat_id` / `target_chat_id` / `target_session_id` —
+   архитектурное решение Development Thread, а не значение из
+   спецификации; задокументировано явно в `schemas/handoff.ts`.
 
 ## Итог по браузерному риску (D.1–D.2)
 
@@ -34,19 +39,21 @@
 
 ## Структура проекта
 
-- `backend/src/services/summarizationService.ts` — LangGraph.js pipeline
-  (extractEntities → extractActionItems → summarize → validate),
-  repair-pass/RAW_FALLBACK, compression_level heuristic (E.1).
-- `backend/src/routes/capture.ts` — обновлён: после захвата
-  conversation-turn асинхронно триггерит суммаризацию каждые 5 сообщений
-  (E.1), не блокируя ответ клиенту.
-- `backend/package.json` — добавлены `@langchain/langgraph` (^0.4.0) и
-  peer-зависимость `@langchain/core` (^0.3.0), обязательная начиная с
-  LangGraph.js v0.4.x.
-- `extension/src/injection_engine.js` — DOM-инъекция с native setter
-  workaround, jitter (D.5).
-- `extension/src/auth_manager.js` — Firebase ID token через Identity
-  Toolkit REST API (D.5).
+- `backend/src/routes/handoff.ts` — `POST /handoff`: ownership checks на
+  source и target чаты, merge `memory_blob`, идемпотентность через
+  provenance-маркер, dead-letter при сбое Firestore (E.2).
+- `backend/src/schemas/handoff.ts` — Zod-схема запроса, с явным
+  Contract Ambiguity Disclosure по отсутствующей в ТЗ форме payload (E.2).
+- `backend/src/types/logging.ts` — добавлены `operation_type` значения
+  `"handoff"` и `"summarize_memory"` (E.2 fix: `summarize_memory`
+  использовался в E.1, но отсутствовал в union — исправлено).
+- `backend/src/index.ts` — смонтирован `handoffRouter` за
+  `requireFirebaseAuth` (E.2).
+- `backend/src/services/summarizationService.ts` — LangGraph.js pipeline (E.1).
+- `backend/src/routes/capture.ts` — асинхронный триггер суммаризации (E.1).
+- `backend/package.json` — `@langchain/langgraph`, `@langchain/core` (E.1).
+- `extension/src/injection_engine.js` — DOM-инъекция, jitter (D.5).
+- `extension/src/auth_manager.js` — Firebase ID token (D.5).
 - `extension/src/passive_logging_controller.js` — state machine (D.4).
 - `extension/src/selector_config_manager.js`,
   `extension/src/config/selector-config.default.json` — selector-config (D.3).
@@ -61,7 +68,6 @@
 - `backend/src/config/firestore.ts`, `env.ts`, `region.ts`.
 - `backend/src/middleware/requestContext.ts`.
 - `backend/src/schemas/capture.ts`.
-- `backend/src/types/logging.ts`.
 - `backend/src/utils/hash.ts`, `ids.ts`.
 - `backend/src/logger.ts`.
 - `backend/Dockerfile`.
@@ -93,9 +99,11 @@ PNB/
 │   │   │   └── types.ts
 │   │   ├── routes/
 │   │   │   ├── capture.ts
+│   │   │   ├── handoff.ts
 │   │   │   └── selectorConfig.ts
 │   │   ├── schemas/
-│   │   │   └── capture.ts
+│   │   │   ├── capture.ts
+│   │   │   └── handoff.ts
 │   │   ├── services/
 │   │   │   ├── deadLetterService.ts
 │   │   │   └── summarizationService.ts
