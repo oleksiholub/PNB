@@ -19,6 +19,7 @@ budget requirement. `assertBudgetRegion()` throws at startup if misconfigured, p
 silent drift into a billed region.
 
 ## Complete tree of PNB files and folders
+```
 pnb-backend/
 ├── .env.example
 ├── .gitignore
@@ -44,3 +45,4 @@ pnb-backend/
     │   └── captureService.ts
     └── validation/
         └── captureValidation.ts
+```
