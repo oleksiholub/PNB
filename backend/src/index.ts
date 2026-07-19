@@ -7,6 +7,7 @@ import { logger, httpLogger, withLogContext } from "./logger";
 import { requestContextMiddleware } from "./middleware/requestContext";
 import { requireFirebaseAuth } from "./middleware/firebaseAuth";
 import { captureRouter } from "./routes/capture";
+import { selectorConfigRouter } from "./routes/selectorConfig";
 
 function bootstrap() {
   const env = loadEnv();
@@ -43,7 +44,12 @@ function bootstrap() {
     });
   });
 
+  // POST /capture now requires a verified Firebase ID token (Sub-step C.1)
   app.use(requireFirebaseAuth, captureRouter);
+
+  // GET /selector-config/current (Sub-step D.3) - closes the read-side gap
+  // left by TZ specifying only POST /selector-config/refresh (publish)
+  app.use(requireFirebaseAuth, selectorConfigRouter);
 
   app.get("/", (req: Request, res: Response) => {
     res.status(200).json({
