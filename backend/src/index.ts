@@ -8,6 +8,7 @@ import { requestContextMiddleware } from "./middleware/requestContext";
 import { requireFirebaseAuth } from "./middleware/firebaseAuth";
 import { captureRouter } from "./routes/capture";
 import { selectorConfigRouter } from "./routes/selectorConfig";
+import { handoffRouter } from "./routes/handoff";
 
 function bootstrap() {
   const env = loadEnv();
@@ -51,12 +52,15 @@ function bootstrap() {
   // left by TZ specifying only POST /selector-config/refresh (publish)
   app.use(requireFirebaseAuth, selectorConfigRouter);
 
+  // POST /handoff (Sub-step E.2) - Cross-Chat Handoff per TZ section 3.3
+  app.use(requireFirebaseAuth, handoffRouter);
+
   app.get("/", (req: Request, res: Response) => {
     res.status(200).json({
       service: "pnb-backend",
-      status: "skeleton+capture+auth+firestore",
+      status: "skeleton+capture+auth+firestore+handoff",
       trace_id: req.traceId,
-      note: "Handoff, push-pipeline, extension layer are added in later iterations",
+      note: "Push-pipeline (Iteration F) and GET /context/:chatId (Sub-step E.3) are added in later iterations",
     });
   });
 
