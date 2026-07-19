@@ -5,6 +5,7 @@ import { loadEnv } from "./config/env";
 import { assertExpectedRegion } from "./config/region";
 import { logger, httpLogger, withLogContext } from "./logger";
 import { requestContextMiddleware } from "./middleware/requestContext";
+import { requireFirebaseAuth } from "./middleware/firebaseAuth";
 import { captureRouter } from "./routes/capture";
 
 function bootstrap() {
@@ -42,14 +43,14 @@ function bootstrap() {
     });
   });
 
-  app.use(captureRouter);
+  app.use(requireFirebaseAuth, captureRouter);
 
   app.get("/", (req: Request, res: Response) => {
     res.status(200).json({
       service: "pnb-backend",
-      status: "skeleton+capture+structured-logging",
+      status: "skeleton+capture+auth+firestore",
       trace_id: req.traceId,
-      note: "Firestore persistence, auth, handoff, push-pipeline are added in later iterations",
+      note: "Handoff, push-pipeline, extension layer are added in later iterations",
     });
   });
 
