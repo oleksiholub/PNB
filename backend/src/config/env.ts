@@ -1,20 +1,20 @@
 import { z } from "zod";
 
 const EnvSchema = z.object({
-  NODE_ENV: z.string().default("production"),
   PORT: z.string().default("8080"),
-  GCP_REGION: z.string(),
-  GCP_PROJECT_ID: z.string(),
-  FIREBASE_PROJECT_ID: z.string(),
+  GCP_REGION: z.string().min(1, "GCP_REGION is required"),
+  NODE_ENV: z.enum(["development", "production", "test"]).default("production"),
+  SERVICE_AUDIENCE: z.string().optional(),
+  TRUSTED_SERVICE_ACCOUNTS: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
 
-export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  const parsed = EnvSchema.safeParse(source);
+export function loadEnv(): Env {
+  const parsed = EnvSchema.safeParse(process.env);
   if (!parsed.success) {
     throw new Error(
-      `Invalid environment configuration: ${JSON.stringify(parsed.error.format())}`
+      `Invalid environment configuration: ${parsed.error.message}`
     );
   }
   return parsed.data;
