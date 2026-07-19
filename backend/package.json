@@ -1,4 +1,4 @@
-{{
+{
   "name": "pnb-backend",
   "version": "0.1.0",
   "description": "PNB (Perplexity Neural Bridge) - L2 Orchestrator backend service",
@@ -18,7 +18,8 @@
     "pino": "^9.2.0",
     "pino-http": "^10.1.0",
     "dotenv": "^16.4.5",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "firebase-admin": "^12.3.0"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
