@@ -1,7 +1,9 @@
 export type OperationType =
   | "capture_conversation"
   | "capture_code_artifact"
-  | "healthz_check";
+  | "healthz_check"
+  | "summarize_memory"
+  | "handoff";
 
 export type ResultStatus =
   | "ACCEPTED"
