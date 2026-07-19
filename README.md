@@ -1,7 +1,7 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step F.1.
+репозитория после завершения Sub-step F.2.
 
 ## Статус
 
@@ -11,30 +11,28 @@
 - ✅ Итерация D завершена целиком (D.1–D.5)
 - ✅ Итерация E завершена целиком (E.1–E.3)
 - 🔶 Итерация F в процессе:
-  - **F.1 — GitHub App authentication service**: signing App JWT (RS256)
-    и обмен на installation access token, `GITHUB_APP_*` env vars, ключ
-    только через Secret Manager (никогда в репозитории/образе)
-  - F.2–F.4 (installation token в push-цикле, QA-гейт, `POST /push`,
-    `POST /selector-config/refresh`) — впереди
+  - F.1 — GitHub App authentication service
+  - **F.2 — `githubBranchService.ts`**: обеспечение существования ветки
+    `auto/<session_id>`, создание от HEAD базовой ветки, идемпотентность
+    при повторных вызовах и при 422-race на конкурентное создание
+  - F.3–F.4 (QA-гейт, `POST /push`, `POST /selector-config/refresh`) — впереди
 
 ## ⚠️ Открытые компромиссы, требующие внимания
 
 1. **Security TODO (D.5)**: временное хранение email/password для
-   Firebase-авторизации в `chrome.storage.local`. Требует ревью Security
-   Thread перед rollout.
-2. **Interim summarizer (E.1)**: экстрактивные heuristics вместо
-   генеративного LLM для суммаризации.
+   Firebase-авторизации в `chrome.storage.local`.
+2. **Interim summarizer (E.1)**: экстрактивные heuristics вместо LLM.
 3. **Request shape для `POST /handoff` (E.2) не специфицирован в ТЗ**.
 4. **Client-side encryption contract для `GET /context/:chatId` (E.3)
-   не специфицирован в ТЗ** — conservative placeholder envelope.
-5. **Token caching policy для GitHub App (F.1) не специфицирована в
-   ТЗ**: ТЗ не даёт TTL-политику кэширования или concurrency-стратегию
-   для installation-токенов при параллельных push-операциях. F.1
-   осознанно минтит новый токен на каждый вызов (без кэширования) —
-   проще и безопаснее против race condition истечения токена, но ценой
-   дополнительных вызовов GitHub API при высокой конкурентности. Это
-   архитектурное решение Development Thread, а не значение из ТЗ; при
-   росте push-объёма в F.2–F.4 требует пересмотра.
+   не специфицирован в ТЗ**.
+5. **Token caching policy для GitHub App (F.1) не специфицирована в ТЗ**.
+6. **Target repository coordinates и default branch (F.2) не
+   специфицированы в ТЗ**: ТЗ упоминает лишь "приватный GitHub-репозиторий"
+   без owner/name/default branch. `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME`
+   и `GITHUB_DEFAULT_BRANCH` вынесены в конфигурацию окружения, а
+   `githubBranchService.ts` принимает `baseBranch` явным параметром, а не
+   зашивает "main" внутри логики — архитектурное решение Development
+   Thread, а не значение из спецификации.
 
 ## Итог по браузерному риску (D.1–D.2)
 
@@ -43,21 +41,19 @@
 
 ## Структура проекта
 
-- `backend/src/services/githubAppAuth.ts` — GitHub App auth: signing
-  RS256 JWT, обмен на installation access token через
-  `POST /app/installations/:id/access_tokens`, least-privilege (без
-  запроса дополнительных permissions сверх выданных App), без
-  кэширования токена между вызовами (F.1).
-- `backend/src/config/env.ts` — добавлены `GITHUB_APP_ID`,
-  `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` (optional до
-  Sub-step F.4, "model exists before consumer" паттерн) (F.1).
-- `backend/.env.example` — добавлены GitHub App переменные с явным
-  предупреждением: приватный ключ только через Secret Manager (F.1).
-- `backend/package.json` — добавлена зависимость `jsonwebtoken` для
-  подписи App JWT (F.1).
+- `backend/src/services/githubBranchService.ts` — `ensureSessionBranch()`:
+  читает HEAD ref базовой ветки через `GET /git/ref/heads/:ref`, создаёт
+  `auto/<session_id>` через `POST /git/refs`, идемпотентно обрабатывает
+  уже существующую ветку и 422-race при конкурентном создании (F.2).
+- `backend/src/config/env.ts` — добавлены `GITHUB_REPO_OWNER`,
+  `GITHUB_REPO_NAME`, `GITHUB_DEFAULT_BRANCH` (default `"main"` только
+  как fallback, не как жёсткое предположение внутри сервиса) (F.2).
+- `backend/.env.example` — добавлены переменные target-репозитория (F.2).
+- `backend/src/services/githubAppAuth.ts` — GitHub App auth, RS256 JWT,
+  installation access token (F.1).
 - `backend/src/routes/context.ts` — `GET /context/:chatId` (E.3).
 - `backend/src/routes/handoff.ts` — `POST /handoff` (E.2).
-- `backend/src/schemas/handoff.ts` — Zod-схема `/handoff` request (E.2).
+- `backend/src/schemas/handoff.ts` — Zod-схема `/handoff` (E.2).
 - `backend/src/types/logging.ts` — `operation_type` values.
 - `backend/src/index.ts` — mounted routers (E.2/E.3).
 - `backend/src/services/summarizationService.ts` — LangGraph.js pipeline (E.1).
@@ -118,6 +114,7 @@ PNB/
 │   │   ├── services/
 │   │   │   ├── deadLetterService.ts
 │   │   │   ├── githubAppAuth.ts
+│   │   │   ├── githubBranchService.ts
 │   │   │   └── summarizationService.ts
 │   │   ├── types/
 │   │   │   └── logging.ts
