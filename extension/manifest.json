@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PNB - Perplexity Neural Bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Captures Perplexity chat context and code artifacts for cross-chat memory and GitHub push automation.",
   "permissions": [
     "storage",
@@ -18,8 +18,18 @@
   "content_scripts": [
     {
       "matches": ["https://www.perplexity.ai/*"],
-      "js": ["src/dom_observer.js", "src/content_script.js"],
+      "js": [
+        "src/selector_config_manager.js",
+        "src/dom_observer.js",
+        "src/content_script.js"
+      ],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/config/selector-config.default.json"],
+      "matches": ["https://www.perplexity.ai/*"]
     }
   ],
   "icons": {
