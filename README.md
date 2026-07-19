@@ -1,52 +1,51 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step B.3 — **Итерация B полностью
-завершена**.
+репозитория после завершения Sub-step C.1.
 
 ## Статус
 
 - ✅ Итерация A завершена (A.1–A.3): backend-скелет, `POST /capture`,
   сквозная структурированная трассировка.
-- ✅ Sub-step B.1: коллекции Firestore, типизированные модели, реальная
-  персистентность `POST /capture`, capture-level дедупликация.
-- ✅ Sub-step B.2: Firestore Security Rules — deny-by-default,
-  `request.auth.uid == owner_uid` для `context`/`code_artifacts`.
-- ✅ Sub-step B.3: interim dead-letter capture (`recordDeadLetter`) — при
-  сбое записи в Firestore событие best-effort сохраняется в коллекцию
-  `dead_letter` вместо безусловной потери; ответ API явно сообщает
-  `dead_lettered: true/false`.
-- Firebase Auth (проверка ID token), GitHub push-пайплайн, extension layer
-  (L1), полноценная retry-очередь с backoff — в следующих итерациях (C–J).
+- ✅ Итерация B завершена (B.1–B.3): Firestore-персистентность,
+  Security Rules, interim dead-letter capture.
+- ✅ Sub-step C.1: `requireFirebaseAuth` — верификация Firebase ID token
+  (`Authorization: Bearer <token>`) через `admin.auth().verifyIdToken()`.
+  **Критический разрыв, зафиксированный после B.2, закрыт**: непроверяемый
+  заголовок `x-owner-uid` полностью удалён из кода, а не просто
+  задепрайорен — `owner_uid` теперь берётся исключительно из
+  криптографически верифицированного `req.auth.uid`. Добавлена также
+  защита от cross-owner коллизий по `content_hash`/`chat_id` (403, если
+  совпадение принадлежит другому владельцу).
+- IAM service-to-service авторизация (C.2), GitHub push-пайплайн, extension
+  layer (L1), полноценная retry-очередь с backoff — в следующих итерациях
+  (C.2, D–J).
 
-## Критически важное ограничение после B.2 (остаётся открытым)
+## Изменение модели угроз после C.1
 
-Firestore Security Rules защищают только клиентский доступ через SDK.
-Backend использует Admin SDK, который **обходит Security Rules**, поэтому
-`POST /capture` до сих пор полагается на непроверяемый заголовок
-`x-owner-uid` — верификация через Firebase ID token добавляется в
-Sub-step C.1.
+До этого под-шага `POST /capture` был уязвим к подмене владельца через
+произвольный заголовок `x-owner-uid`. Теперь любой запрос без валидного
+Firebase ID token получает `401`, а `owner_uid` в Firestore-документах
+гарантированно соответствует реальному аутентифицированному пользователю.
+Это устраняет угрозу, явно описанную в разделах README для B.2 и Итерации
+B — тот баннер по критическому разрыву больше не актуален для `/capture`.
 
-## Уточнённый статус пробела H.1 после B.3
+## Остающийся открытый пробел (H.1)
 
-Sub-step B.3 добавляет **best-effort однократную попытку** записи в
-`dead_letter` при сбое основной персистентности — это **не** полноценная
-retry-очередь с экспоненциальным backoff, требуемая разделом 3.4 ТЗ.
-Если сам сбой Firestore длится дольше одной попытки, запись в
-`dead_letter` тоже может провалиться — в этом случае событие
-**действительно теряется**, и API возвращает `dead_lettered: false`.
-Автоматические повторные попытки с backoff реализуются в Sub-step H.1,
-который переиспользует уже существующую коллекцию `dead_letter` и её
-Security Rules (обе готовы с B.1/B.2).
+Retry-очередь с экспоненциальным backoff (TZ раздел 3.4) — ещё не
+реализована; `POST /capture` при сбое Firestore делает лишь одну
+best-effort попытку записи в `dead_letter` (Sub-step B.3).
 
 ## Структура проекта
 
 - `firestore.rules`, `firebase.json`, `firestore.indexes.json` — Security
-  Rules и конфигурация деплоя (B.2).
-- `backend/src/services/deadLetterService.ts` — interim dead-letter
-  capture (B.3).
-- `backend/src/routes/capture.ts` — `POST /capture` с персистентностью,
-  дедупликацией (B.1) и dead-letter fallback при сбое (B.3).
+  Rules и конфигурация деплоя.
+- `backend/src/middleware/firebaseAuth.ts` — верификация Firebase ID token,
+  `requireFirebaseAuth` (C.1).
+- `backend/src/services/deadLetterService.ts` — interim dead-letter capture.
+- `backend/src/routes/capture.ts` — `POST /capture`: персистентность,
+  дедупликация, dead-letter fallback, теперь с верифицированным `owner_uid`
+  и защитой от cross-owner коллизий.
 - `backend/src/models/types.ts` — TypeScript-модели Data Model раздела 4 ТЗ.
 - `backend/src/models/collections.ts` — типизированные Firestore-коллекции.
 - `backend/src/config/firestore.ts` — инициализация Firebase Admin SDK.
@@ -70,6 +69,7 @@ PNB/
 │   │   │   ├── firestore.ts
 │   │   │   └── region.ts
 │   │   ├── middleware/
+│   │   │   ├── firebaseAuth.ts
 │   │   │   └── requestContext.ts
 │   │   ├── models/
 │   │   │   ├── collections.ts
