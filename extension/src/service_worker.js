@@ -5,6 +5,8 @@ const KNOWN_MESSAGE_TYPES = new Set([
   "PNB_PUSH_COMMAND_DETECTED",
   "PNB_CAPTCHA_DETECTED",
   "PNB_TEXTAREA_STATUS",
+  "PNB_SELECTOR_CONFIG_LOADED",
+  "PNB_SELECTOR_CONFIG_INIT_FAILED",
 ]);
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -43,6 +45,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "PNB_TEXTAREA_STATUS":
       console.log("[PNB] textarea status:", message.payload);
+      break;
+    case "PNB_SELECTOR_CONFIG_LOADED":
+      console.log("[PNB] selector config loaded, version:", message.payload?.version);
+      break;
+    case "PNB_SELECTOR_CONFIG_INIT_FAILED":
+      console.error("[PNB] CRITICAL: selector config init failed:", message.payload);
       break;
     default:
       break;
