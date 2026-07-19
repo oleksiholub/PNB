@@ -1,3 +1,30 @@
+/**
+ * POST /capture route handler.
+ *
+ * Sub-step C.1 change: owner_uid is now sourced exclusively from
+ * `req.auth.uid`, populated by requireFirebaseAuth (verified Firebase ID
+ * token) - the unverified `x-owner-uid` header from Iteration B is
+ * REMOVED, not merely deprioritized. This closes the security gap
+ * explicitly flagged in the B.2 README ("Security Rules alone do NOT
+ * protect POST /capture today").
+ *
+ * requireFirebaseAuth is mounted ahead of this router in index.ts, so
+ * req.auth is guaranteed to be populated by the time this handler runs;
+ * TypeScript still models it as optional (see firebaseAuth.ts) since the
+ * type is declared globally and Express cannot statically prove
+ * middleware ordering, so a defensive fallback to "unknown" would mask a
+ * real bug - instead, this handler treats a missing req.auth as an
+ * internal error (should be unreachable given the current middleware
+ * chain) rather than silently defaulting.
+ *
+ * Sub-step E.1 change: after a conversation-turn capture succeeds, the
+ * updated raw_history_refs count is checked against
+ * shouldTriggerSummarization() and, if due, summarizeAndUpdateMemory()
+ * is invoked fire-and-forget (not awaited into the response) - TZ 3.3
+ * treats summarization as an async orchestration step, not a
+ * synchronous part of the capture contract, so a slow or failed
+ * summarization must never delay or fail the client-facing response.
+ */
 import { Router, Request, Response } from "express";
 import { ZodError } from "zod";
 import {
@@ -10,6 +37,11 @@ import { withLogContext } from "../logger";
 import { codeArtifactsCollection, contextCollection } from "../models/collections";
 import { CodeArtifactDocument, ChatContextDocument } from "../models/types";
 import { recordDeadLetter } from "../services/deadLetterService";
+import {
+  summarizeAndUpdateMemory,
+  shouldTriggerSummarization,
+  SUMMARIZATION_TRIGGER_EVERY_N_TURNS,
+} from "../services/summarizationService";
 
 export const captureRouter = Router();
 
@@ -269,13 +301,38 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       retry_count: 0,
     }).info("conversation turn captured and persisted to Firestore");
 
+    const refreshedSnap = await docRef.get();
+    const refCount = (refreshedSnap.data() as ChatContextDocument).memory_blob
+      .raw_history_refs.length;
+
+    let summarizationTriggered = false;
+    if (shouldTriggerSummarization(refCount)) {
+      summarizationTriggered = true;
+      // Fire-and-forget: summarization must never block or fail the
+      // capture response - TZ 3.3 treats it as an async orchestration
+      // step, not a synchronous part of the capture contract.
+      summarizeAndUpdateMemory(chat_id, traceId).catch((err) => {
+        withLogContext({
+          trace_id: traceId,
+          chat_id,
+          session_id,
+          operation_type: "summarize_memory",
+          result_status: "INTERNAL_ERROR",
+          retry_count: 0,
+        }).error({ err }, "unhandled rejection from summarizeAndUpdateMemory");
+      });
+    }
+
     res.status(202).json({
       accepted: true,
       persisted: true,
       trace_id: traceId,
       chat_id,
       session_id,
-      note: "Summarization, entity extraction and encryption are implemented in Iteration E.",
+      summarization_triggered: summarizationTriggered,
+      note: summarizationTriggered
+        ? "Summarization pipeline triggered asynchronously (LangGraph.js, extractive interim summarizer - see Sub-step E.1 README)."
+        : `Summarization triggers every ${SUMMARIZATION_TRIGGER_EVERY_N_TURNS} turns; client-side encryption of memory_blob is implemented in a later sub-step.`,
     });
   } catch (err) {
     withLogContext({
