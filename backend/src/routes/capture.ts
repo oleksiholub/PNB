@@ -9,6 +9,7 @@ import { newArtifactId } from "../utils/ids";
 import { withLogContext } from "../logger";
 import { codeArtifactsCollection, contextCollection } from "../models/collections";
 import { CodeArtifactDocument, ChatContextDocument } from "../models/types";
+import { recordDeadLetter } from "../services/deadLetterService";
 
 export const captureRouter = Router();
 
@@ -139,12 +140,23 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
         retry_count: 0,
       }).error({ err }, "Firestore write failed for code artifact capture");
 
+      const deadLettered = await recordDeadLetter({
+        traceId,
+        chatId: chat_id,
+        sessionId: session_id,
+        reason: "firestore_write_failed:code_artifact",
+        originalPayload: parsed,
+        operationType: "capture_code_artifact",
+      });
+
       res.status(500).json({
         error: "persistence_failed",
         persisted: false,
-        retry_queued: false,
+        dead_lettered: deadLettered,
         trace_id: traceId,
-        note: "Retry queue / dead-letter handling not yet implemented (Sub-step H.1). This event is currently lost on Firestore failure.",
+        note: deadLettered
+          ? "Primary write failed but the event was captured in dead_letter for forensics/reprocessing. Automated retry with backoff is implemented in Sub-step H.1."
+          : "Primary write AND dead_letter write both failed. This event is genuinely lost.",
       });
     }
     return;
@@ -221,12 +233,23 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       retry_count: 0,
     }).error({ err }, "Firestore write failed for conversation capture");
 
+    const deadLettered = await recordDeadLetter({
+      traceId,
+      chatId: chat_id,
+      sessionId: session_id,
+      reason: "firestore_write_failed:conversation",
+      originalPayload: parsed,
+      operationType: "capture_conversation",
+    });
+
     res.status(500).json({
       error: "persistence_failed",
       persisted: false,
-      retry_queued: false,
+      dead_lettered: deadLettered,
       trace_id: traceId,
-      note: "Retry queue / dead-letter handling not yet implemented (Sub-step H.1). This event is currently lost on Firestore failure.",
+      note: deadLettered
+        ? "Primary write failed but the event was captured in dead_letter for forensics/reprocessing. Automated retry with backoff is implemented in Sub-step H.1."
+        : "Primary write AND dead_letter write both failed. This event is genuinely lost.",
     });
   }
 });
