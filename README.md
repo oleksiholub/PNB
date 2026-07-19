@@ -1,7 +1,8 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step B.2.
+репозитория после завершения Sub-step B.3 — **Итерация B полностью
+завершена**.
 
 ## Статус
 
@@ -9,39 +10,43 @@
   сквозная структурированная трассировка.
 - ✅ Sub-step B.1: коллекции Firestore, типизированные модели, реальная
   персистентность `POST /capture`, capture-level дедупликация.
-- ✅ Sub-step B.2: Firestore Security Rules (`firestore.rules`) —
-  deny-by-default, явное открытие каждой коллекции с проверкой
-  `request.auth.uid == owner_uid` для `context` и `code_artifacts`;
-  `dead_letter` закрыт полностью для клиентов, `selector_configs`
-  доступен на чтение только авторизованным пользователям.
+- ✅ Sub-step B.2: Firestore Security Rules — deny-by-default,
+  `request.auth.uid == owner_uid` для `context`/`code_artifacts`.
+- ✅ Sub-step B.3: interim dead-letter capture (`recordDeadLetter`) — при
+  сбое записи в Firestore событие best-effort сохраняется в коллекцию
+  `dead_letter` вместо безусловной потери; ответ API явно сообщает
+  `dead_lettered: true/false`.
 - Firebase Auth (проверка ID token), GitHub push-пайплайн, extension layer
-  (L1) — в следующих под-шагах/итерациях (C–J) обязывающего плана.
+  (L1), полноценная retry-очередь с backoff — в следующих итерациях (C–J).
 
-## Критически важное ограничение после B.2
+## Критически важное ограничение после B.2 (остаётся открытым)
 
-Firestore Security Rules защищают **только доступ через клиентские SDK**
-(будущий extension layer L1, веб-консоль). Backend использует Admin SDK
-(`src/config/firestore.ts`), который **полностью обходит Security Rules**
-по архитектуре Firebase — поэтому `POST /capture` до сих пор не защищён
-Security Rules и полагается на клиентский заголовок `x-owner-uid`, который
-**не верифицируется** до Sub-step C.1 (проверка Firebase ID token). Это
-явно зафиксированный, не скрытый разрыв в безопасности backend-эндпоинта.
+Firestore Security Rules защищают только клиентский доступ через SDK.
+Backend использует Admin SDK, который **обходит Security Rules**, поэтому
+`POST /capture` до сих пор полагается на непроверяемый заголовок
+`x-owner-uid` — верификация через Firebase ID token добавляется в
+Sub-step C.1.
 
-## Известный и явно зафиксированный пробел после B.1 (остаётся открытым)
+## Уточнённый статус пробела H.1 после B.3
 
-Retry-очередь и dead-letter обработка (TZ раздел 3.4) ещё не реализованы
-(Sub-step H.1). При сбое записи в Firestore событие теряется — API
-возвращает `persisted: false, retry_queued: false`.
+Sub-step B.3 добавляет **best-effort однократную попытку** записи в
+`dead_letter` при сбое основной персистентности — это **не** полноценная
+retry-очередь с экспоненциальным backoff, требуемая разделом 3.4 ТЗ.
+Если сам сбой Firestore длится дольше одной попытки, запись в
+`dead_letter` тоже может провалиться — в этом случае событие
+**действительно теряется**, и API возвращает `dead_lettered: false`.
+Автоматические повторные попытки с backoff реализуются в Sub-step H.1,
+который переиспользует уже существующую коллекцию `dead_letter` и её
+Security Rules (обе готовы с B.1/B.2).
 
 ## Структура проекта
 
-- `firestore.rules` — Security Rules для клиентского доступа (B.2).
-- `firebase.json`, `firestore.indexes.json` — конфигурация деплоя правил и
-  составной индекс для дедупликации по `chat_id` + `content_hash`.
-- `backend/src/index.ts` — точка входа, middleware трассировки, httpLogger,
-  `capture`-роут, `/healthz`, глобальный error handler.
-- `backend/src/routes/capture.ts` — `POST /capture` с персистентностью в
-  Firestore и capture-level дедупликацией.
+- `firestore.rules`, `firebase.json`, `firestore.indexes.json` — Security
+  Rules и конфигурация деплоя (B.2).
+- `backend/src/services/deadLetterService.ts` — interim dead-letter
+  capture (B.3).
+- `backend/src/routes/capture.ts` — `POST /capture` с персистентностью,
+  дедупликацией (B.1) и dead-letter fallback при сбое (B.3).
 - `backend/src/models/types.ts` — TypeScript-модели Data Model раздела 4 ТЗ.
 - `backend/src/models/collections.ts` — типизированные Firestore-коллекции.
 - `backend/src/config/firestore.ts` — инициализация Firebase Admin SDK.
@@ -73,6 +78,8 @@ PNB/
 │   │   │   └── capture.ts
 │   │   ├── schemas/
 │   │   │   └── capture.ts
+│   │   ├── services/
+│   │   │   └── deadLetterService.ts
 │   │   ├── types/
 │   │   │   └── logging.ts
 │   │   ├── utils/
