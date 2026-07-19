@@ -7,6 +7,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   "PNB_TEXTAREA_STATUS",
   "PNB_SELECTOR_CONFIG_LOADED",
   "PNB_SELECTOR_CONFIG_INIT_FAILED",
+  "PNB_STATE_TRANSITION",
 ]);
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -38,10 +39,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log("[PNB] push command detected:", message.payload);
       break;
     case "PNB_CAPTCHA_DETECTED":
-      console.warn(
-        "[PNB] CAPTCHA/verification indicator detected - Passive Logging mode transition is implemented in Sub-step D.4",
-        message.payload
-      );
+      console.warn("[PNB] CAPTCHA/verification indicator detected:", message.payload);
       break;
     case "PNB_TEXTAREA_STATUS":
       console.log("[PNB] textarea status:", message.payload);
@@ -51,6 +49,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "PNB_SELECTOR_CONFIG_INIT_FAILED":
       console.error("[PNB] CRITICAL: selector config init failed:", message.payload);
+      break;
+    case "PNB_STATE_TRANSITION":
+      if (message.payload?.to === "BROWSER_INCOMPATIBLE") {
+        console.error("[PNB] CRITICAL: BROWSER_INCOMPATIBLE -", message.payload.context);
+      } else if (message.payload?.to === "PASSIVE_LOGGING") {
+        console.warn("[PNB] WARN: entering PASSIVE_LOGGING -", message.payload.context);
+      } else {
+        console.log("[PNB] state transition:", message.payload);
+      }
       break;
     default:
       break;
