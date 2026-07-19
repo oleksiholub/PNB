@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PNB_VERSION = "0.1.0-d1-skeleton";
+  const PNB_VERSION = "0.2.0-d2-dom-observer";
 
   function notifyServiceWorker(type, payload) {
     try {
@@ -17,6 +17,18 @@
       url: window.location.href,
       timestamp: new Date().toISOString(),
     });
+
+    if (!window.PNB || !window.PNB.PnbDomObserver) {
+      console.error(
+        "[PNB] window.PNB.PnbDomObserver is missing - check that dom_observer.js is listed BEFORE content_script.js in manifest.json's content_scripts.js array"
+      );
+      return;
+    }
+
+    const observer = new window.PNB.PnbDomObserver(null, (event) => {
+      notifyServiceWorker(event.type, event.payload);
+    });
+    observer.start();
   }
 
   if (document.readyState === "complete" || document.readyState === "interactive") {
