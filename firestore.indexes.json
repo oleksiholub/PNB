@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "code_artifacts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "chat_id", "order": "ASCENDING" },
+        { "fieldPath": "content_hash", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
