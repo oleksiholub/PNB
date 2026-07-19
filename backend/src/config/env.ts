@@ -6,6 +6,9 @@ const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("production"),
   SERVICE_AUDIENCE: z.string().optional(),
   TRUSTED_SERVICE_ACCOUNTS: z.string().optional(),
+  GITHUB_APP_ID: z.string().optional(),
+  GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+  GITHUB_APP_INSTALLATION_ID: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
