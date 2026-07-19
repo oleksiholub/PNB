@@ -5,27 +5,26 @@ import {
   normalizeQaStatus,
 } from "../schemas/capture";
 import { sha256Hex } from "../utils/hash";
-import { newArtifactId, newTraceId } from "../utils/ids";
-import { logger } from "../logger";
+import { newArtifactId } from "../utils/ids";
+import { withLogContext } from "../logger";
 
 export const captureRouter = Router();
 
 captureRouter.post("/capture", (req: Request, res: Response) => {
-  const traceId = newTraceId();
+  const traceId = req.traceId;
 
   let parsed;
   try {
     parsed = CaptureRequestSchema.parse(req.body);
   } catch (err) {
     if (err instanceof ZodError) {
-      logger.warn(
-        {
-          trace_id: traceId,
-          operation_type: "capture",
-          result_status: "VALIDATION_FAILED",
-        },
-        "capture payload failed validation"
-      );
+      withLogContext({
+        trace_id: traceId,
+        operation_type: "capture_conversation",
+        result_status: "VALIDATION_FAILED",
+        retry_count: 0,
+      }).warn({ issues: err.issues }, "capture payload failed validation");
+
       res.status(400).json({
         error: "invalid_payload",
         trace_id: traceId,
@@ -33,10 +32,14 @@ captureRouter.post("/capture", (req: Request, res: Response) => {
       });
       return;
     }
-    logger.error(
-      { trace_id: traceId, operation_type: "capture", err },
-      "unexpected error during capture validation"
-    );
+
+    withLogContext({
+      trace_id: traceId,
+      operation_type: "capture_conversation",
+      result_status: "INTERNAL_ERROR",
+      retry_count: 0,
+    }).error({ err }, "unexpected error during capture validation");
+
     res.status(500).json({ error: "internal_error", trace_id: traceId });
     return;
   }
@@ -48,15 +51,15 @@ captureRouter.post("/capture", (req: Request, res: Response) => {
     const qaStatus = normalizeQaStatus(parsed.qa_status);
     const artifactId = newArtifactId();
 
-    logger.info(
-      {
-        trace_id: traceId,
-        chat_id,
-        session_id,
-        operation_type: "capture_code_artifact",
-        result_status: "ACCEPTED",
-        retry_count: 0,
-      },
+    withLogContext({
+      trace_id: traceId,
+      chat_id,
+      session_id,
+      operation_type: "capture_code_artifact",
+      result_status: "ACCEPTED",
+      retry_count: 0,
+    }).info(
+      { artifact_id: artifactId, qa_status: qaStatus },
       "code artifact captured (not yet persisted - Iteration B)"
     );
 
@@ -73,17 +76,14 @@ captureRouter.post("/capture", (req: Request, res: Response) => {
     return;
   }
 
-  logger.info(
-    {
-      trace_id: traceId,
-      chat_id,
-      session_id,
-      operation_type: "capture_conversation",
-      result_status: "ACCEPTED",
-      retry_count: 0,
-    },
-    "conversation turn captured (not yet persisted - Iteration B)"
-  );
+  withLogContext({
+    trace_id: traceId,
+    chat_id,
+    session_id,
+    operation_type: "capture_conversation",
+    result_status: "ACCEPTED",
+    retry_count: 0,
+  }).info("conversation turn captured (not yet persisted - Iteration B)");
 
   res.status(202).json({
     accepted: true,
