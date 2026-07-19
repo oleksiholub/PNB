@@ -1,7 +1,7 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step D.1.
+репозитория после завершения Sub-step D.2.
 
 ## Статус
 
@@ -11,41 +11,49 @@
   Security Rules, interim dead-letter capture.
 - ✅ Итерация C завершена (C.1–C.2): Firebase Auth для end-user запросов,
   Google-signed OIDC для service-to-service (пока не подключён).
-- ✅ Sub-step D.1: Manifest V3 скелет extension layer (L1) —
-  `manifest.json`, `content_script.js`, `service_worker.js`. Только
-  lifecycle-сигнал `PNB_PAGE_READY`; без MutationObserver, без
-  распознавания артефактов, без вызовов к backend.
-- GitHub push-пайплайн, полноценная retry-очередь с backoff — в
-  следующих итерациях (F–J).
+- ✅ Sub-step D.1: Manifest V3 скелет extension layer (L1).
+- ✅ Sub-step D.2: `MutationObserver`-наблюдатель (`dom_observer.js`),
+  распознаёт model response блоки, code-артефакты (по `QA Status`
+  marker), push-команды оператора, CAPTCHA-индикаторы, наличие textarea.
+  Только детекция и логирование — без инъекции, без вызовов к backend.
+- GitHub push-пайплайн, selector-config (D.3), полноценная retry-очередь
+  с backoff — в следующих итерациях.
 
-## КРИТИЧЕСКИЙ РИСК, обнаруженный на D.1 (не скрыт)
+## Итог по браузерному риску (пункт 0 текущего цикла)
 
-Веб-поиск при выполнении D.1 показал: **Kiwi Browser — целевая
-Android-платформа с поддержкой расширений — прекратил активную
-разработку в январе 2025 года и не получает обновлений безопасности**.
-Если TZ предполагает Kiwi Browser как основную целевую платформу для
-extension layer (L1) на Android, этот факт **напрямую угрожает
-жизнеспособности всей архитектуры L1** и должен быть переоценён
-Theoretical/Hypothesis Thread — Development Thread не имеет мандата
-самостоятельно менять целевую платформу и лишь фиксирует находку.
-Поле `browser_family: "kiwi"` в `ChatContextDocument` (введено в B.1)
-остаётся в коде, но его практическая ценность зависит от разрешения
-этого риска.
+Критический риск Kiwi Browser с D.1 **снят на архитектурном уровне**: ТЗ
+изначально параметризует `browser_family` и не привязано к единственному
+браузеру (разделы 3.1, 10 ТЗ). Обнаружен и зафиксирован **уточнённый
+риск уровня реализации**: Helium Browser поддерживает только Manifest
+V2, тогда как расширение реализовано на MV3 — Helium практически
+исключён как целевой браузер без отдельной MV2-сборки. Lemur Browser
+остаётся активно поддерживаемым MV3-совместимым кандидатом и
+рекомендован как наиболее устойчивый выбор для bootstrap (раздел 6, шаг
+12 ТЗ). Итоговый выбор браузера — решение оператора, не Development
+Thread.
 
-## Платформенное ограничение MV3 (важно для D.3)
+## Самокоррекция на D.2 (не скрыта)
 
-Manifest V3 запрещает исполнение удалённо загруженного кода, но не
-запрещает получение удалённых JSON-данных как данных (не как
-исполняемого кода) — это разграничение критично для Sub-step D.3,
-где selector-config должен подгружаться удалённо без нарушения этого
-правила Chrome Web Store.
+При реализации `dom_observer.js` первая версия использовала синтаксис ES
+`import`/`export`, что **несовместимо** с content scripts, объявленными
+через `content_scripts[].js` в `manifest.json` — они выполняются в
+"изолированном мире" без поддержки модулей (в отличие от background
+service worker с `type: "module"`). Ошибка была обнаружена и исправлена
+до вывода финальной версии: используется паттерн общего namespace
+`window.PNB`, а `dom_observer.js` подключён в manifest **перед**
+`content_script.js`, поскольку content scripts из одного entry делят
+общий global scope.
 
 ## Структура проекта
 
-- `extension/manifest.json` — Manifest V3 конфигурация (D.1).
-- `extension/src/content_script.js` — скелет content script (D.1).
-- `extension/src/service_worker.js` — event-driven service worker (D.1).
-- `extension/README_extension.md` — детали и предупреждения по L1-слою.
+- `extension/manifest.json` — Manifest V3 конфигурация (D.1, D.2).
+- `extension/src/dom_observer.js` — `MutationObserver`, распознавание
+  артефактов/команд/CAPTCHA (D.2).
+- `extension/src/content_script.js` — подключает observer, транслирует
+  события service worker'у (D.1, обновлён в D.2).
+- `extension/src/service_worker.js` — маршрутизация сообщений (D.1,
+  обновлён в D.2).
+- `extension/README_extension.md` — детали, риски, самокоррекции L1-слоя.
 - `firestore.rules`, `firebase.json`, `firestore.indexes.json` — Security
   Rules и конфигурация деплоя.
 - `backend/src/middleware/firebaseAuth.ts` — верификация Firebase ID token.
@@ -104,6 +112,7 @@ PNB/
 │   ├── icons/
 │   ├── src/
 │   │   ├── content_script.js
+│   │   ├── dom_observer.js
 │   │   └── service_worker.js
 │   ├── README_extension.md
 │   └── manifest.json
