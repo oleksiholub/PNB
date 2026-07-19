@@ -1,14 +1,17 @@
 (function () {
   "use strict";
 
-  const PNB_VERSION = "0.4.0-d4-passive-logging";
+  const PNB_VERSION = "0.5.0-d5-injection";
 
   function notifyServiceWorker(type, payload) {
-    try {
-      chrome.runtime.sendMessage({ type, payload, source: "pnb_content_script" });
-    } catch (err) {
-      console.error("[PNB] failed to notify service worker:", err);
-    }
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ type, payload, source: "pnb_content_script" }, resolve);
+      } catch (err) {
+        console.error("[PNB] failed to notify service worker:", err);
+        resolve(null);
+      }
+    });
   }
 
   async function init() {
@@ -22,7 +25,7 @@
       "SelectorConfigManager",
       "PnbDomObserver",
       "PassiveLoggingController",
-      "detectRequiredApiSupport",
+      "InjectionEngine",
     ];
     const missingGlobals = requiredGlobals.filter((name) => !window.PNB || !window.PNB[name]);
     if (missingGlobals.length > 0) {
@@ -63,18 +66,25 @@
 
     notifyServiceWorker("PNB_SELECTOR_CONFIG_LOADED", { version: activeConfig.version });
 
+    const injectionEngine = new window.PNB.InjectionEngine(activeConfig.selectors, activeConfig.jitter_ms);
+
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message?.type !== "PNB_REQUEST_INJECTION") return false;
+
+      if (!controller.shouldAllowActiveInjection()) {
+        sendResponse({ success: false, reason: `blocked_by_controller_state:${controller.getState()}` });
+        return true;
+      }
+
+      injectionEngine.injectAndSend(message.payload.text).then(sendResponse);
+      return true;
+    });
+
     const observer = new window.PNB.PnbDomObserver(activeConfig.selectors, (event) => {
       if (event.type === "PNB_CAPTCHA_DETECTED") {
         controller.onCaptchaDetected(event.payload.marker);
       }
       notifyServiceWorker(event.type, event.payload);
-
-      if (controller.shouldAllowActiveInjection()) {
-        // Sub-step D.5 injection logic will run here, gated by the check
-        // above. D.4 only logs the gate's decision - no injection exists yet.
-      } else {
-        console.log("[PNB] active injection suppressed - controller state:", controller.getState());
-      }
     });
     observer.start();
   }
