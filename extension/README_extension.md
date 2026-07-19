@@ -1,60 +1,58 @@
-# PNB Extension Layer (L1) - D.1 Skeleton + D.2 Observer + D.3 Selector Config
+# PNB Extension Layer (L1) - D.1-D.4
 
-## Sub-step D.3: JSON selector-config, remote-обновление + rollback
+## Sub-step D.4: Passive Logging + BROWSER_INCOMPATIBLE state machine
 
-- `src/config/selector-config.default.json` — bundled default конфигурация,
-  реализующая схему раздела 3.1.1 ТЗ (fallback-массивы с {type, value, priority}).
-- `src/selector_config_manager.js` — `SelectorConfigManager`:
-  - `init()` — загружает последнюю known-good версию из `chrome.storage.local`,
-    либо bundled default при первом запуске;
-  - `applyRemoteConfig(newConfig)` — структурная валидация новой конфигурации
-    перед применением; при провале валидации автоматический rollback на
-    последнюю known-good версию + событие `PNB_SELECTOR_CONFIG_INIT_FAILED`
-    (severity CRITICAL, раздел 3.4 ТЗ), а не тихое падение;
-  - `fetchRemoteConfig(endpointUrl, idToken)` — готовый, но **пока не
-    вызываемый автоматически** метод (см. ниже).
-- `dom_observer.js` больше не использует хардкод `DEFAULT_SELECTORS` —
-  принимает конфигурацию извне через конструктор.
-- `content_script.js` инициализирует `SelectorConfigManager` до старта
-  observer'а; при провале инициализации observer не стартует вообще
-  (fail-safe, не fail-silent).
+- `src/passive_logging_controller.js` — `PassiveLoggingController`:
+  состояния `ACTIVE -> PASSIVE_LOGGING -> ACTIVE` (нормализация) или
+  `-> BROWSER_INCOMPATIBLE` (терминальное, без авто-восстановления),
+  строго по разделу 3.1 ТЗ.
+  - `checkBrowserCompatibility()` — проверяет наличие
+    `chrome.runtime.sendMessage`, `chrome.storage.local`,
+    `MutationObserver`, `fetch`; при отсутствии любого API — немедленный
+    переход в `BROWSER_INCOMPATIBLE`.
+  - `onCaptchaDetected(marker)` — переход в `PASSIVE_LOGGING` +
+    запуск polling-проверки нормализации (интервал 5000ms) как
+    избыточный safety-net к MutationObserver (CAPTCHA-страница может
+    заменить DOM целиком, минуя добавление узлов).
+  - `shouldAllowActiveInjection()` — единственный публичный gate,
+    который **обязан** вызываться Sub-step D.5 перед любой инъекцией.
+- `content_script.js` обновлён: проверка совместимости выполняется
+  **первой**, до инициализации selector-config и observer'а; CAPTCHA-
+  события из observer'а теперь передаются в controller, а не только
+  логируются.
+- `service_worker.js` классифицирует переходы по severity (раздел 3.4
+  ТЗ): `BROWSER_INCOMPATIBLE` → CRITICAL, `PASSIVE_LOGGING` → WARN.
 
-## КОНТРАКТНЫЙ ПРОБЕЛ, обнаруженный и закрытый на D.3 (не скрыт)
+## ЯВНО ЗАФИКСИРОВАННАЯ НЕЗАВЕРШЁННОСТЬ КОНТРАКТА (не скрыта)
 
-ТЗ (раздел 3.2) описывает только `POST /selector-config/refresh` —
-эндпоинт **публикации** новой версии конфигурации. Явного **read-side**
-эндпоинта для получения текущей опубликованной версии в тексте ТЗ нет,
-хотя Acceptance Criteria 7 ("клиент откатывается на последнюю рабочую
-selector-конфигурацию") логически предполагает существование механизма
-получения новой версии для последующего rollback при её несовместимости.
-Это скрытая двусмысленность контракта, а не выдуманное требование:
-`GET /selector-config/current` добавлен backend'ом в этом же под-шаге
-(`backend/src/routes/selectorConfig.ts`) именно чтобы закрыть этот
-пробел, а не оставить его молча нерешённым до более поздней итерации.
+`shouldAllowActiveInjection()` в D.4 вызывается только в **dry-run**
+режиме — рядом с местом, где будущий код инъекции D.5 обязан находиться,
+но самой инъекции ещё нет. D.4 не может доказать, что D.5 действительно
+будет вызывать этот gate, поскольку вызывающий код физически не
+существует; это зависимость, зафиксированная явно в комментариях кода,
+а не тихо предполагаемая выполненной.
 
-## Почему `fetchRemoteConfig()` пока НЕ вызывается автоматически
+## Разграничение двух категорий несовместимости (не смешаны)
 
-Два независимых блокера, оба зафиксированы, а не спрятаны:
+- `BROWSER_INCOMPATIBLE` (D.4) — отсутствие/поломка **платформенных API**
+  расширения (раздел 3.1 ТЗ: "ломает API расширения").
+- Selector-config rollback (D.3) — несовместимость **DOM-структуры**
+  Perplexity с текущими селекторами (раздел 3.4 ТЗ).
 
-1. До этого под-шага не существовало read-side эндпоинта — закрыто выше.
-2. Раздел 5 ТЗ требует Firebase ID token для любого клиент↔backend
-   запроса, а extension пока не умеет получать такой токен (это
-   Sub-step D.5). Поэтому `fetchRemoteConfig()` реализован и готов к
-   использованию, но подключается к реальному циклу обновления только в
-   D.5, когда обе половины (backend route + auth на клиенте) существуют
-   одновременно.
+Это две разные категории отказа с разными механизмами восстановления —
+намеренно не объединены в один статус.
+
+## Из D.3
+
+- `selector_config_manager.js`, `selector-config.default.json` —
+  валидация, кэширование, rollback.
+- Контрактный пробел ТЗ закрыт: `GET /selector-config/current` на backend'е.
 
 ## Из D.2
 
-- `dom_observer.js` — `MutationObserver`, распознавание артефактов/команд/CAPTCHA.
-- Самокоррекция: устранена несовместимость ES-модулей с content scripts
-  (общий namespace `window.PNB`, порядок файлов в manifest важен —
-  теперь порядок: `selector_config_manager.js` → `dom_observer.js` →
-  `content_script.js`).
+- `dom_observer.js` — `MutationObserver`, принимает конфигурацию извне.
 
 ## Из D.1
 
-- `manifest.json` — Manifest V3 конфигурация, `web_accessible_resources`
-  добавлен в D.3 для доступа к bundled JSON.
-- Критический риск Kiwi Browser снят на архитектурном уровне; уточнённый
-  риск — несовместимость Helium Browser с MV3 (см. README.md).
+- `manifest.json` — Manifest V3. Критический риск Kiwi Browser снят
+  архитектурно; уточнённый риск — несовместимость Helium с MV3 (см. README.md).
