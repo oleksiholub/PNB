@@ -1,61 +1,60 @@
-# PNB Extension Layer (L1) - D.1 Skeleton + D.2 DOM Observer
+# PNB Extension Layer (L1) - D.1 Skeleton + D.2 Observer + D.3 Selector Config
 
-## Пункт 0: доработка D.1 по итогам браузерного анализа
+## Sub-step D.3: JSON selector-config, remote-обновление + rollback
 
-Код `manifest.json` (Manifest V3) **не требует изменений** — ТЗ явно фиксирует
-Chrome Extension API Manifest V3 как часть обязательного технологического
-стека (раздел 1 ТЗ), а выбор конкретного Android-браузера параметризован
-через `browser_family` и "фиксируется в конфигурации внедрения" (раздел 3.1
-ТЗ), а не хардкодится в коде расширения. Поэтому единственная необходимая
-правка — документационная, не кодовая:
+- `src/config/selector-config.default.json` — bundled default конфигурация,
+  реализующая схему раздела 3.1.1 ТЗ (fallback-массивы с {type, value, priority}).
+- `src/selector_config_manager.js` — `SelectorConfigManager`:
+  - `init()` — загружает последнюю known-good версию из `chrome.storage.local`,
+    либо bundled default при первом запуске;
+  - `applyRemoteConfig(newConfig)` — структурная валидация новой конфигурации
+    перед применением; при провале валидации автоматический rollback на
+    последнюю known-good версию + событие `PNB_SELECTOR_CONFIG_INIT_FAILED`
+    (severity CRITICAL, раздел 3.4 ТЗ), а не тихое падение;
+  - `fetchRemoteConfig(endpointUrl, idToken)` — готовый, но **пока не
+    вызываемый автоматически** метод (см. ниже).
+- `dom_observer.js` больше не использует хардкод `DEFAULT_SELECTORS` —
+  принимает конфигурацию извне через конструктор.
+- `content_script.js` инициализирует `SelectorConfigManager` до старта
+  observer'а; при провале инициализации observer не стартует вообще
+  (fail-safe, не fail-silent).
 
-**Уточнённое ограничение (зафиксировано, не скрыто):** Helium Browser
-поддерживает только Manifest V2 и не совместим с текущим MV3-расширением
-без отдельной MV2-сборки — это выводит Helium из числа практически
-пригодных целевых браузеров для данной реализации, если только оператор
-не запросит отдельно параллельную MV2-сборку (не входит в текущий scope
-ТЗ). Kiwi Browser и Lemur Browser остаются MV3-совместимыми кандидатами;
-Kiwi при этом не обновляется с января 2025 года, что делает **Lemur
-Browser** наиболее устойчивым текущим выбором для bootstrap-процедуры
-(раздел 6, шаг 12 ТЗ). Итоговый выбор браузера остаётся решением оператора
-на этапе bootstrap, а не Development Thread.
+## КОНТРАКТНЫЙ ПРОБЕЛ, обнаруженный и закрытый на D.3 (не скрыт)
 
-## Sub-step D.2: DOM Observer и распознавание артефактов/команд
+ТЗ (раздел 3.2) описывает только `POST /selector-config/refresh` —
+эндпоинт **публикации** новой версии конфигурации. Явного **read-side**
+эндпоинта для получения текущей опубликованной версии в тексте ТЗ нет,
+хотя Acceptance Criteria 7 ("клиент откатывается на последнюю рабочую
+selector-конфигурацию") логически предполагает существование механизма
+получения новой версии для последующего rollback при её несовместимости.
+Это скрытая двусмысленность контракта, а не выдуманное требование:
+`GET /selector-config/current` добавлен backend'ом в этом же под-шаге
+(`backend/src/routes/selectorConfig.ts`) именно чтобы закрыть этот
+пробел, а не оставить его молча нерешённым до более поздней итерации.
 
-- `src/dom_observer.js` — `MutationObserver` над `document.body`,
-  распознаёт появление новых блоков сообщений, textarea, send button,
-  model picker, CAPTCHA-индикаторы, code-артефакты (по `QA Status` regex
-  из раздела 3.1.1 ТЗ) и push-команды оператора ("запушь", "commit").
-- Использует **временный локальный набор селекторов** (`DEFAULT_SELECTORS`)
-  как placeholder, изоморфный схеме selector-config из раздела 3.1.1 ТЗ.
-  Это осознанное forward-provisioning решение (по аналогии с
-  `dead_letter` в B.1/B.3 и `serviceAuth.ts` в C.2): реальная
-  remote-конфигурация с fallback-приоритетами и rollback подключается
-  только в D.3, чтобы не проектировать формат конфигурации дважды.
-- `content_script.js` подключает observer и транслирует найденные события
-  service worker'у через новые типы сообщений: `PNB_MODEL_RESPONSE_DETECTED`,
-  `PNB_CODE_ARTIFACT_DETECTED`, `PNB_PUSH_COMMAND_DETECTED`,
-  `PNB_CAPTCHA_DETECTED`.
-- `service_worker.js` расширен обработкой новых типов сообщений, но **не
-  выполняет** сетевые вызовы к backend — отправка в `/capture` требует
-  Firebase ID token, что реализуется в D.5 (инъекция + auth), не в D.2.
-- Обнаружение CAPTCHA в D.2 — только детекция и логирование; формальный
-  переход в режим Passive Logging с прекращением активной инъекции —
-  предмет Sub-step D.4, поскольку сама инъекция ещё не реализована (D.5).
+## Почему `fetchRemoteConfig()` пока НЕ вызывается автоматически
 
-## Самокоррекция на D.2 (не скрыта)
+Два независимых блокера, оба зафиксированы, а не спрятаны:
 
-Первая черновая версия `dom_observer.js` использовала синтаксис ES
-`import`/`export`, что **несовместимо** с content scripts, объявленными
-через `content_scripts[].js` в `manifest.json` — они выполняются в
-"изолированном мире" без поддержки модулей (в отличие от background
-service worker с `type: "module"`). Исправлено на паттерн общего
-namespace `window.PNB`, а `dom_observer.js` подключён в manifest **перед**
-`content_script.js`, поскольку content scripts из одного entry делят
-общий global scope.
+1. До этого под-шага не существовало read-side эндпоинта — закрыто выше.
+2. Раздел 5 ТЗ требует Firebase ID token для любого клиент↔backend
+   запроса, а extension пока не умеет получать такой токен (это
+   Sub-step D.5). Поэтому `fetchRemoteConfig()` реализован и готов к
+   использованию, но подключается к реальному циклу обновления только в
+   D.5, когда обе половины (backend route + auth на клиенте) существуют
+   одновременно.
+
+## Из D.2
+
+- `dom_observer.js` — `MutationObserver`, распознавание артефактов/команд/CAPTCHA.
+- Самокоррекция: устранена несовместимость ES-модулей с content scripts
+  (общий namespace `window.PNB`, порядок файлов в manifest важен —
+  теперь порядок: `selector_config_manager.js` → `dom_observer.js` →
+  `content_script.js`).
 
 ## Из D.1
 
-- `manifest.json` — Manifest V3 конфигурация.
-- Критический риск Kiwi Browser (устаревание) снят на архитектурном уровне
-  анализом ТЗ (см. пункт 0 выше и предыдущий ответ по браузерам).
+- `manifest.json` — Manifest V3 конфигурация, `web_accessible_resources`
+  добавлен в D.3 для доступа к bundled JSON.
+- Критический риск Kiwi Browser снят на архитектурном уровне; уточнённый
+  риск — несовместимость Helium Browser с MV3 (см. README.md).
