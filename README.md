@@ -1,7 +1,7 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step D.2.
+репозитория после завершения Sub-step D.3.
 
 ## Статус
 
@@ -12,48 +12,43 @@
 - ✅ Итерация C завершена (C.1–C.2): Firebase Auth для end-user запросов,
   Google-signed OIDC для service-to-service (пока не подключён).
 - ✅ Sub-step D.1: Manifest V3 скелет extension layer (L1).
-- ✅ Sub-step D.2: `MutationObserver`-наблюдатель (`dom_observer.js`),
-  распознаёт model response блоки, code-артефакты (по `QA Status`
-  marker), push-команды оператора, CAPTCHA-индикаторы, наличие textarea.
-  Только детекция и логирование — без инъекции, без вызовов к backend.
-- GitHub push-пайплайн, selector-config (D.3), полноценная retry-очередь
-  с backoff — в следующих итерациях.
+- ✅ Sub-step D.2: `MutationObserver`-наблюдатель, распознавание
+  артефактов/команд/CAPTCHA.
+- ✅ Sub-step D.3: JSON selector-config (`SelectorConfigManager`) с
+  структурной валидацией и автоматическим rollback на последнюю
+  known-good версию; закрыт контрактный пробел ТЗ — добавлен
+  `GET /selector-config/current` на backend'е (ранее в ТЗ был описан
+  только `POST /selector-config/refresh`). Полный remote-цикл обновления
+  (fetch + Firebase ID token) отложен до D.5.
+- GitHub push-пайплайн, полноценная retry-очередь с backoff — в
+  следующих итерациях.
 
-## Итог по браузерному риску (пункт 0 текущего цикла)
+## Итог по браузерному риску (зафиксирован на D.1–D.2)
 
-Критический риск Kiwi Browser с D.1 **снят на архитектурном уровне**: ТЗ
-изначально параметризует `browser_family` и не привязано к единственному
-браузеру (разделы 3.1, 10 ТЗ). Обнаружен и зафиксирован **уточнённый
-риск уровня реализации**: Helium Browser поддерживает только Manifest
-V2, тогда как расширение реализовано на MV3 — Helium практически
-исключён как целевой браузер без отдельной MV2-сборки. Lemur Browser
-остаётся активно поддерживаемым MV3-совместимым кандидатом и
-рекомендован как наиболее устойчивый выбор для bootstrap (раздел 6, шаг
-12 ТЗ). Итоговый выбор браузера — решение оператора, не Development
-Thread.
-
-## Самокоррекция на D.2 (не скрыта)
-
-При реализации `dom_observer.js` первая версия использовала синтаксис ES
-`import`/`export`, что **несовместимо** с content scripts, объявленными
-через `content_scripts[].js` в `manifest.json` — они выполняются в
-"изолированном мире" без поддержки модулей (в отличие от background
-service worker с `type: "module"`). Ошибка была обнаружена и исправлена
-до вывода финальной версии: используется паттерн общего namespace
-`window.PNB`, а `dom_observer.js` подключён в manifest **перед**
-`content_script.js`, поскольку content scripts из одного entry делят
-общий global scope.
+Критический риск Kiwi Browser снят на архитектурном уровне — ТЗ
+параметризует `browser_family` (разделы 3.1, 10 ТЗ). Уточнённый риск:
+Helium Browser поддерживает только Manifest V2, несовместим с текущим
+MV3-расширением. **Lemur Browser** рекомендован как наиболее устойчивый
+MV3-совместимый выбор для bootstrap (раздел 6, шаг 12 ТЗ).
 
 ## Структура проекта
 
-- `extension/manifest.json` — Manifest V3 конфигурация (D.1, D.2).
-- `extension/src/dom_observer.js` — `MutationObserver`, распознавание
-  артефактов/команд/CAPTCHA (D.2).
-- `extension/src/content_script.js` — подключает observer, транслирует
-  события service worker'у (D.1, обновлён в D.2).
-- `extension/src/service_worker.js` — маршрутизация сообщений (D.1,
-  обновлён в D.2).
-- `extension/README_extension.md` — детали, риски, самокоррекции L1-слоя.
+- `extension/manifest.json` — Manifest V3, `web_accessible_resources`
+  добавлен в D.3.
+- `extension/src/config/selector-config.default.json` — bundled default
+  конфигурация селекторов (D.3).
+- `extension/src/selector_config_manager.js` — валидация, кэширование,
+  rollback selector-config (D.3).
+- `extension/src/dom_observer.js` — `MutationObserver`, принимает
+  конфигурацию извне (обновлён в D.3, был хардкод в D.2).
+- `extension/src/content_script.js` — инициализация конфигурации перед
+  запуском observer'а (обновлён в D.3).
+- `extension/src/service_worker.js` — маршрутизация сообщений, включая
+  lifecycle selector-config (обновлён в D.3).
+- `extension/README_extension.md` — детали, риски, контрактные пробелы
+  L1-слоя.
+- `backend/src/routes/selectorConfig.ts` — `GET /selector-config/current`,
+  закрывает контрактный пробел ТЗ (D.3).
 - `firestore.rules`, `firebase.json`, `firestore.indexes.json` — Security
   Rules и конфигурация деплоя.
 - `backend/src/middleware/firebaseAuth.ts` — верификация Firebase ID token.
@@ -74,12 +69,20 @@ service worker с `type: "module"`). Ошибка была обнаружена 
 
 ```
 PNB/
+├── README.md
 ├── backend/
+│   ├── .dockerignore
+│   ├── .env.example
+│   ├── .gitignore
+│   ├── Dockerfile
+│   ├── package.json
 │   ├── src/
 │   │   ├── config/
 │   │   │   ├── env.ts
 │   │   │   ├── firestore.ts
 │   │   │   └── region.ts
+│   │   ├── index.ts
+│   │   ├── logger.ts
 │   │   ├── middleware/
 │   │   │   ├── firebaseAuth.ts
 │   │   │   ├── requestContext.ts
@@ -88,35 +91,31 @@ PNB/
 │   │   │   ├── collections.ts
 │   │   │   └── types.ts
 │   │   ├── routes/
-│   │   │   └── capture.ts
+│   │   │   ├── capture.ts
+│   │   │   └── selectorConfig.ts
 │   │   ├── schemas/
 │   │   │   └── capture.ts
 │   │   ├── services/
 │   │   │   └── deadLetterService.ts
 │   │   ├── types/
 │   │   │   └── logging.ts
-│   │   ├── utils/
-│   │   │   ├── hash.ts
-│   │   │   └── ids.ts
-│   │   ├── index.ts
-│   │   └── logger.ts
-│   ├── .dockerignore
-│   ├── .env.example
-│   ├── .gitignore
-│   ├── Dockerfile
-│   ├── package.json
+│   │   └── utils/
+│   │       ├── hash.ts
+│   │       └── ids.ts
 │   └── tsconfig.json
 ├── docs/
 │   └── architecture-notes.md
 ├── extension/
-│   ├── icons/
-│   ├── src/
-│   │   ├── content_script.js
-│   │   ├── dom_observer.js
-│   │   └── service_worker.js
 │   ├── README_extension.md
-│   └── manifest.json
-├── README.md
+│   ├── icons/
+│   ├── manifest.json
+│   └── src/
+│       ├── config/
+│       │   └── selector-config.default.json
+│       ├── content_script.js
+│       ├── dom_observer.js
+│       ├── selector_config_manager.js
+│       └── service_worker.js
 ├── firebase.json
 ├── firestore.indexes.json
 └── firestore.rules
