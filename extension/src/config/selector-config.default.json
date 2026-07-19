@@ -1,0 +1,44 @@
+{
+  "version": "2026-07-19",
+  "target_host": "www.perplexity.ai",
+  "selectors": {
+    "chat_container": [
+      {"type": "css", "value": "[data-testid='chat-container']", "priority": 1},
+      {"type": "css", "value": "main", "priority": 2}
+    ],
+    "message_blocks": [
+      {"type": "css", "value": "[data-testid='message-block']", "priority": 1}
+    ],
+    "user_input_textarea": [
+      {"type": "css", "value": "textarea", "priority": 1}
+    ],
+    "send_button": [
+      {"type": "css", "value": "button[type='submit']", "priority": 1}
+    ],
+    "model_picker": [
+      {"type": "css", "value": "[data-testid='model-picker']", "priority": 1}
+    ],
+    "captcha_indicators": [
+      {"type": "text", "value": "verify you are human", "priority": 1},
+      {"type": "text", "value": "captcha", "priority": 2}
+    ],
+    "handoff_trigger_markers": [
+      {"type": "text", "value": "Инициализация контекста:", "priority": 1}
+    ],
+    "push_command_markers": [
+      {"type": "text", "value": "запушь", "priority": 1},
+      {"type": "text", "value": "commit", "priority": 2}
+    ],
+    "qa_status_markers": [
+      {"type": "regex", "value": "QA Status\\s*:\\s*(PASSED|FAILED|FIXING)", "priority": 1}
+    ]
+  },
+  "timeouts_ms": {
+    "dom_settle": 1200,
+    "post_send_wait": 3000
+  },
+  "jitter_ms": {
+    "min": 350,
+    "max": 1400
+  }
+}
