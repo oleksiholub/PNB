@@ -9,6 +9,9 @@ const EnvSchema = z.object({
   GITHUB_APP_ID: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_APP_INSTALLATION_ID: z.string().optional(),
+  GITHUB_REPO_OWNER: z.string().optional(),
+  GITHUB_REPO_NAME: z.string().optional(),
+  GITHUB_DEFAULT_BRANCH: z.string().default("main"),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
