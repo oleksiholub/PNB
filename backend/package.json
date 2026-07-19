@@ -19,7 +19,8 @@
     "pino-http": "^10.1.0",
     "dotenv": "^16.4.5",
     "zod": "^3.23.8",
-    "firebase-admin": "^12.3.0"
+    "firebase-admin": "^12.3.0",
+    "google-auth-library": "^9.14.0"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
