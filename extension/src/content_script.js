@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const PNB_VERSION = "0.3.0-d3-selector-config";
+  const PNB_VERSION = "0.4.0-d4-passive-logging";
 
   function notifyServiceWorker(type, payload) {
     try {
@@ -18,10 +18,36 @@
       timestamp: new Date().toISOString(),
     });
 
-    if (!window.PNB || !window.PNB.SelectorConfigManager || !window.PNB.PnbDomObserver) {
+    const requiredGlobals = [
+      "SelectorConfigManager",
+      "PnbDomObserver",
+      "PassiveLoggingController",
+      "detectRequiredApiSupport",
+    ];
+    const missingGlobals = requiredGlobals.filter((name) => !window.PNB || !window.PNB[name]);
+    if (missingGlobals.length > 0) {
       console.error(
-        "[PNB] required globals missing - check manifest.json content_scripts.js order: selector_config_manager.js and dom_observer.js must load BEFORE content_script.js"
+        "[PNB] required globals missing - check manifest.json content_scripts.js load order:",
+        missingGlobals
       );
+      return;
+    }
+
+    const controller = new window.PNB.PassiveLoggingController(
+      (transition) => {
+        console.log(`[PNB] state transition: ${transition.from} -> ${transition.to}`, transition.context);
+        notifyServiceWorker("PNB_STATE_TRANSITION", transition);
+      },
+      () => {
+        const bodyText = document.body.textContent || "";
+        return bodyText.toLowerCase().includes("captcha") || bodyText.toLowerCase().includes("verify you are human");
+      },
+      5000
+    );
+
+    const compatible = controller.checkBrowserCompatibility();
+    if (!compatible) {
+      console.error("[PNB] BROWSER_INCOMPATIBLE - required extension APIs missing, halting active operation");
       return;
     }
 
@@ -38,7 +64,17 @@
     notifyServiceWorker("PNB_SELECTOR_CONFIG_LOADED", { version: activeConfig.version });
 
     const observer = new window.PNB.PnbDomObserver(activeConfig.selectors, (event) => {
+      if (event.type === "PNB_CAPTCHA_DETECTED") {
+        controller.onCaptchaDetected(event.payload.marker);
+      }
       notifyServiceWorker(event.type, event.payload);
+
+      if (controller.shouldAllowActiveInjection()) {
+        // Sub-step D.5 injection logic will run here, gated by the check
+        // above. D.4 only logs the gate's decision - no injection exists yet.
+      } else {
+        console.log("[PNB] active injection suppressed - controller state:", controller.getState());
+      }
     });
     observer.start();
   }
