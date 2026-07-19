@@ -1,3 +1,45 @@
+importScripts("auth_manager.js");
+
+let authManager = null;
+
+async function getAuthManager() {
+  if (authManager) return authManager;
+  const stored = await new Promise((resolve) => chrome.storage.local.get(["pnb_firebase_api_key"], resolve));
+  if (!stored.pnb_firebase_api_key) {
+    throw new Error("pnb_firebase_api_key not set - run first-run setup (see README)");
+  }
+  authManager = new self.PNB.AuthManager(stored.pnb_firebase_api_key);
+  return authManager;
+}
+
+async function forwardToBackend(eventType, payload) {
+  const stored = await new Promise((resolve) => chrome.storage.local.get(["pnb_backend_url"], resolve));
+  if (!stored.pnb_backend_url) {
+    console.warn("[PNB] pnb_backend_url not set - skipping backend forward for", eventType);
+    return;
+  }
+
+  try {
+    const manager = await getAuthManager();
+    const idToken = await manager.getIdToken();
+
+    const response = await fetch(`${stored.pnb_backend_url}/capture`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({ event_type: eventType, payload, captured_at: new Date().toISOString() }),
+    });
+
+    if (!response.ok) {
+      console.error(`[PNB] backend /capture rejected event ${eventType}: HTTP ${response.status}`);
+    }
+  } catch (err) {
+    console.error(`[PNB] failed to forward ${eventType} to backend:`, err);
+  }
+}
+
 const KNOWN_MESSAGE_TYPES = new Set([
   "PNB_PAGE_READY",
   "PNB_MODEL_RESPONSE_DETECTED",
@@ -31,12 +73,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
     case "PNB_MODEL_RESPONSE_DETECTED":
       console.log("[PNB] model response detected:", message.payload);
+      forwardToBackend(message.type, message.payload);
       break;
     case "PNB_CODE_ARTIFACT_DETECTED":
       console.log("[PNB] code artifact detected:", message.payload);
+      forwardToBackend(message.type, message.payload);
       break;
     case "PNB_PUSH_COMMAND_DETECTED":
       console.log("[PNB] push command detected:", message.payload);
+      forwardToBackend(message.type, message.payload);
       break;
     case "PNB_CAPTCHA_DETECTED":
       console.warn("[PNB] CAPTCHA/verification indicator detected:", message.payload);
