@@ -1,3 +1,10 @@
+/**
+ * PNB Backend entrypoint - L2 Orchestrator (Cloud Run service).
+ * Sub-step C.1: mounts requireFirebaseAuth ahead of captureRouter, so
+ * POST /capture now requires a verified Firebase ID token
+ * (Authorization: Bearer <token>) instead of the unverified x-owner-uid
+ * header used throughout Iteration B.
+ */
 import express, { Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import cors from "cors";
@@ -9,6 +16,7 @@ import { requireFirebaseAuth } from "./middleware/firebaseAuth";
 import { captureRouter } from "./routes/capture";
 import { selectorConfigRouter } from "./routes/selectorConfig";
 import { handoffRouter } from "./routes/handoff";
+import { contextRouter } from "./routes/context";
 
 function bootstrap() {
   const env = loadEnv();
@@ -55,12 +63,15 @@ function bootstrap() {
   // POST /handoff (Sub-step E.2) - Cross-Chat Handoff per TZ section 3.3
   app.use(requireFirebaseAuth, handoffRouter);
 
+  // GET /context/:chatId (Sub-step E.3) - read-side for resumed sessions
+  app.use(requireFirebaseAuth, contextRouter);
+
   app.get("/", (req: Request, res: Response) => {
     res.status(200).json({
       service: "pnb-backend",
-      status: "skeleton+capture+auth+firestore+handoff",
+      status: "skeleton+capture+auth+firestore+handoff+context",
       trace_id: req.traceId,
-      note: "Push-pipeline (Iteration F) and GET /context/:chatId (Sub-step E.3) are added in later iterations",
+      note: "Push-pipeline (Iteration F) is added in later iterations",
     });
   });
 
