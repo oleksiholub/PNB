@@ -16,6 +16,20 @@ export const captureRouter = Router();
 captureRouter.post("/capture", async (req: Request, res: Response) => {
   const traceId = req.traceId;
 
+  if (!req.auth) {
+    withLogContext({
+      trace_id: traceId,
+      operation_type: "capture_conversation",
+      result_status: "INTERNAL_ERROR",
+      retry_count: 0,
+    }).error(
+      "req.auth missing in capture handler despite requireFirebaseAuth mounted ahead of this route - middleware ordering bug"
+    );
+    res.status(500).json({ error: "internal_error", trace_id: traceId });
+    return;
+  }
+  const ownerUid = req.auth.uid;
+
   let parsed;
   try {
     parsed = CaptureRequestSchema.parse(req.body);
@@ -63,6 +77,26 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
 
       if (!existing.empty) {
         const existingDoc = existing.docs[0].data();
+
+        if (existingDoc.owner_uid !== ownerUid) {
+          withLogContext({
+            trace_id: traceId,
+            chat_id,
+            session_id,
+            operation_type: "capture_code_artifact",
+            result_status: "VALIDATION_FAILED",
+            retry_count: 0,
+          }).warn(
+            "content_hash collision across different owner_uid - refusing to return cross-owner artifact"
+          );
+          res.status(403).json({
+            error: "forbidden",
+            trace_id: traceId,
+            note: "A matching artifact exists but belongs to a different owner_uid.",
+          });
+          return;
+        }
+
         withLogContext({
           trace_id: traceId,
           chat_id,
@@ -101,7 +135,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
         retry_count: 0,
         chat_id,
         session_id,
-        owner_uid: req.headers["x-owner-uid"]?.toString() ?? "unknown",
+        owner_uid: ownerUid,
         created_at: new Date().toISOString(),
       };
 
@@ -170,6 +204,26 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
 
     if (existingSnap.exists) {
       const existingData = existingSnap.data() as ChatContextDocument;
+
+      if (existingData.owner_uid !== ownerUid) {
+        withLogContext({
+          trace_id: traceId,
+          chat_id,
+          session_id,
+          operation_type: "capture_conversation",
+          result_status: "VALIDATION_FAILED",
+          retry_count: 0,
+        }).warn(
+          "chat_id collision across different owner_uid - refusing cross-owner write"
+        );
+        res.status(403).json({
+          error: "forbidden",
+          trace_id: traceId,
+          note: "This chat_id belongs to a different owner_uid.",
+        });
+        return;
+      }
+
       const rawRef = parsed.user_message ?? parsed.model_response ?? "";
       await docRef.set(
         {
@@ -190,7 +244,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
         chat_id,
         session_id,
         trace_id: traceId,
-        owner_uid: req.headers["x-owner-uid"]?.toString() ?? "unknown",
+        owner_uid: ownerUid,
         created_at: nowIso,
         last_interaction: nowIso,
         memory_blob: {
