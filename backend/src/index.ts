@@ -4,6 +4,7 @@ import cors from "cors";
 import { loadEnv } from "./config/env";
 import { assertExpectedRegion } from "./config/region";
 import { logger } from "./logger";
+import { captureRouter } from "./routes/capture";
 
 function bootstrap() {
   const env = loadEnv();
@@ -29,11 +30,13 @@ function bootstrap() {
     });
   });
 
+  app.use(captureRouter);
+
   app.get("/", (_req: Request, res: Response) => {
     res.status(200).json({
       service: "pnb-backend",
-      status: "skeleton",
-      note: "POST /capture is added in Sub-step A.2",
+      status: "skeleton+capture",
+      note: "Firestore persistence, auth, handoff, push-pipeline are added in later iterations",
     });
   });
 
