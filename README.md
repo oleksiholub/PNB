@@ -1,77 +1,77 @@
-# PNB Backend — L2 Orchestrator (Iteration A: Complete — Sub-steps A.1-A.3)
+# PNB Backend — L2 Orchestrator (Iteration A complete; Iteration B: B.1 done; Iteration C: C.1 done)
 
 Scaffold for the Cloud Run backend service defined in tz-handoff_v4.md §3.2.
-Iteration A (basic backend + POST /capture) is now fully consolidated per the
-Development Thread's Code Implementation Planning Protocol.
 
 ## Structure
 - `src/config.ts` — centralized, secret-free runtime configuration + region budget guard.
-- `src/server.ts` — Express app assembly: helmet, cors, request logging middleware, route mounting; `buildApp(config)` takes config explicitly for testability.
-- `src/routes/healthz.ts` — `GET /healthz` health-check for Cloud Run and external monitoring (unauthenticated by design).
-- `src/routes/capture.ts` — `POST /capture` HTTP entrypoint: validates payload, delegates to `CaptureService`, maps errors to safe HTTP responses.
-- `src/services/captureService.ts` — core `/capture` business logic: qa_status normalization, QA-gate push_status assignment, idempotency dedup key construction.
-- `src/repositories/contextRepository.ts` — persistence contract (`ContextRepository`) + in-memory reference implementation; Firestore-backed implementation lands in Iteration B.
-- `src/validation/captureValidation.ts` — structural validation of the `POST /capture` request body against the TZ §4 data model.
-- `src/types.ts` — shared TypeScript types mirroring TZ §4 (Data Model) exactly: `ContextRecord`, `CodeArtifact`, `MemoryBlob`, etc.
-- `src/lib/logger.ts` — structured JSON logger; every log line carries `session_id`, `chat_id`, `trace_id`, `operation_type`, `result_status`, `retry_count` per TZ §3.2.
-- `src/lib/requestLogging.ts` — Express middleware emitting one structured log line per request/response cycle (status code, duration, trace_id).
-- `src/__tests__/` — Jest unit tests (`captureService.test.ts`, `healthz.test.ts`).
+- `src/server.ts` — Express app assembly: helmet, cors, traceId + request logging middleware, route mounting; `buildApp(config, firebaseApp?)` wires Firebase ID token auth onto `/capture` when a Firebase App is supplied (always true in production via `main()`).
+- `src/lib/auth.ts` — **NEW (C.1)**: Firebase ID token verification middleware; binds `req.ownerUid` to a cryptographically verified identity, never trusting a client-supplied `owner_uid`.
+- `src/routes/healthz.ts` — `GET /healthz` health-check (unauthenticated by design; Cloud Run/monitoring must reach it without a token).
+- `src/routes/capture.ts` — `POST /capture` HTTP entrypoint; **updated (C.1)** to require `req.ownerUid` set by the auth middleware, overriding any client-supplied `owner_uid` in the body.
+- `src/services/captureService.ts` — core `/capture` business logic: qa_status normalization, QA-gate push_status, idempotency dedup key, trace_id propagation.
+- `src/repositories/contextRepository.ts` — persistence contract + in-memory reference implementation (still wired in `server.ts`; Firestore DI swap remains a follow-up).
+- `src/repositories/firestoreContextRepository.ts` — Firestore-backed implementation using a transactional dedup-key document as a unique-constraint substitute.
+- `src/lib/firestoreAdmin.ts` — Firebase Admin SDK bootstrap via Application Default Credentials.
+- `src/lib/tracing.ts` — `traceIdMiddleware` + `getOrCreateTraceId`, one trace_id per request.
+- `src/validation/captureValidation.ts` — structural validation of `POST /capture` against TZ §4.
+- `src/types.ts` — shared TypeScript types mirroring TZ §4 exactly.
+- `src/lib/logger.ts` — structured JSON logger (session_id, chat_id, trace_id, operation_type, result_status, retry_count).
+- `src/lib/requestLogging.ts` — request logging middleware using the shared trace_id.
+- `src/__tests__/` — Jest unit tests: `captureService.test.ts`, `healthz.test.ts`, `tracing.test.ts`, `auth.test.ts` (**NEW, C.1**; mocks Firebase Admin's `getAuth` to test middleware wiring without a live project).
+- `firestore/firestore.rules` — Security Rules enforcing `request.auth.uid == owner_uid` on `contexts`; `code_artifacts`/`dead_letter` backend-only; `configs/selectors` read-only for authenticated clients.
+- `firestore/firestore.indexes.json` — composite indexes for owner-scoped queries.
+- `firebase.json` — points Firebase CLI at the rules/indexes files.
 - `Dockerfile` — multi-stage build, non-root runtime user, no baked-in secrets.
-- `cloudbuild.yaml` — CI/CD pipeline targeting `us-east1` (Cloud Run Always Free budget constraint).
-- `.env.example` — documents required environment variable NAMES only (no values, no secrets).
+- `cloudbuild.yaml` — CI/CD pipeline targeting `us-east1`.
+- `.env.example` — required environment variable NAMES only.
 
-## Iteration A — Consolidated Summary (Sub-steps A.1 → A.3)
+## Iteration A — Summary (complete, consolidated)
+A.1: project skeleton and deploy tooling. A.2: `POST /capture` with QA-gate push_status
+and idempotent dedup keys. A.3: `GET /healthz` and structured request logging.
 
-### A.1 — Project skeleton and deployment tooling
-Delivered the project skeleton, build/deploy tooling, and region-locked configuration
-loader. Did not implement `/capture`, `/healthz`, or any business logic by design —
-those were explicitly deferred to A.2 and A.3.
+## Iteration B — Sub-step B.1 (complete)
+Defined the Firestore schema surface (`contexts`, `code_artifacts`, `dead_letter`,
+`configs/selectors`), implemented owner-scoped Security Rules per TZ §5, implemented
+`FirestoreContextRepository` with transactional idempotency (closing CALIBRATION_DB
+Iteration 1.6's gap at the real-database level), and fixed a latent Iteration A gap
+where a single request could log two different `trace_id` values.
 
-### A.2 — `POST /capture`
-Implements the full `/capture` contract from TZ §3.2 and §4: accepts either a plain
-(`user_message`/`model_response`) turn or a `code_artifact` payload with `push_requested`.
-Normalizes a missing `qa_status` to `FAILED` per TZ §4 and assigns `push_status`
-accordingly (`REJECTED_BY_QA_GATE` vs `PENDING`) as a placeholder for the full push
-pipeline (Iteration F). Idempotency is enforced via a dedup key built from
-`chat_id` + `content_hash` (code artifacts) or `chat_id` + a message-signature fallback
-(plain turns), so retried/duplicate captures are explicitly reported as `DEDUPLICATED`
-rather than silently reprocessed or collapsed into the same boolean outcome as a fresh
-capture. Persistence uses an in-memory reference repository; the Firestore-backed
-implementation is Iteration B, sub-step B.1 — a named, deliberate scope boundary rather
-than a silent omission.
-
-### A.3 — `GET /healthz` and structured request logging
-Adds `GET /healthz`, returning `{ status, region, uptime_seconds, timestamp }`,
-intentionally left unauthenticated so Cloud Run health probes and external uptime
-monitors can reach it without a Firebase ID token (auth enforcement for
-`/capture`-class routes is Iteration C). Adds `requestLoggingMiddleware`, which emits
-one structured JSON log line per HTTP request/response cycle — carrying `trace_id`,
-`operation_type` (`METHOD path`), `result_status`, status code, and duration — so every
-request is observable even before Iteration H's full error/retry telemetry lands.
+## Iteration C — Sub-step C.1: Firebase ID token verification (complete)
+Implemented `createAuthMiddleware`, which verifies the `Authorization: Bearer <idToken>`
+header via Firebase Admin SDK and sets `req.ownerUid` to the cryptographically verified
+uid. `POST /capture` now derives its authoritative `owner_uid` EXCLUSIVELY from
+`req.ownerUid`, discarding any `owner_uid` supplied in the request body. This closes a
+security gap identified while building on top of B.1: without server-side token
+verification, the Firestore Security Rules' `request.auth.uid == owner_uid` check would
+have been meaningless for any write routed through this backend, since a client could
+otherwise claim an arbitrary `owner_uid` directly in the JSON payload.
+`buildApp(config, firebaseApp?)` makes the Firebase App an explicit, optional dependency:
+when omitted, `/capture` runs unauthenticated (used only by Iteration A/B's existing unit
+tests for backward compatibility); `main()` — the actual production entrypoint — always
+initializes and passes a real Firebase App, so the deployed service is always
+auth-enforced. IAM service-to-service auth for internal calls remains a follow-up item.
 
 ## Region constraint
-`GCP_REGION` defaults to and is validated against `us-east1`, per the TZ's Always Free
-budget requirement. `assertBudgetRegion()` throws at startup if misconfigured, preventing
-silent drift into a billed region.
+`GCP_REGION` defaults to and is validated against `us-east1`. `assertBudgetRegion()`
+throws at startup if misconfigured.
 
 ## Testing
-Run `npm test` to execute the Jest suite (`captureService.test.ts` covers idempotency and
-the QA gate; `healthz.test.ts` covers the health endpoint's shape and its intentional lack
-of auth). `supertest` is used for HTTP-level assertions against the Express app without
-binding a real port. Note: as of this consolidation, the suite has been authored and
-statically reviewed but not yet executed inside an actual CI runner — first real execution
-is scheduled for Iteration G (Cloud Build CI/merge automation). Treat suite results as
-Likely-correct-by-inspection, not yet Established-by-execution.
+`npm test` runs `captureService.test.ts`, `healthz.test.ts`, `tracing.test.ts`, and
+`auth.test.ts` (the latter mocks `firebase-admin/auth` to test the middleware's
+401/pass-through logic without a live Firebase project). Suite is authored and reviewed;
+first real CI execution is scheduled for Iteration G.
 
-## Open uncertainties carried forward from Iteration A
-- Firestore Always Free quota behavior under real load is designed for, not yet measured.
-- The `github.com/oleksiholub/PNB` repository content could not be independently verified
-  (fetch and search both failed) — treated as Unknown, not incorporated as fact.
-- Test suite has not yet run in an executing environment (see Testing section above).
+## Open uncertainties
+- Firestore Always Free quota behavior under real load: designed for, not yet measured.
+- `github.com/oleksiholub/PNB` content: unverifiable at time of writing (fetch + search failed).
+- Test suite: not yet executed in a real CI runner.
+- `FirestoreContextRepository`: unit-testable in isolation; behavior against a live
+  Firestore emulator/instance not yet exercised.
+- IAM service-to-service auth (backend-internal calls) not yet implemented.
 
-## Not yet implemented (tracked in the binding Development Thread plan)
-- Firestore-backed persistence, Security Rules, and full trace/logging pipeline (Iteration B).
-- Firebase Auth: ID token verification on `/capture`, IAM service-to-service auth (Iteration C).
+## Not yet implemented
+- DI swap from `InMemoryContextRepository` to `FirestoreContextRepository` in `server.ts`.
+- IAM service-to-service auth for internal calls.
 - Browser extension (L1) and selector-config (Iteration D).
 - LangGraph memory orchestration, `POST /handoff`, `GET /context/:chatId` (Iteration E).
 - GitHub App installation-token push pipeline, `POST /push` (Iteration F).
@@ -87,6 +87,10 @@ pnb-backend/
 ├── Dockerfile
 ├── README.md
 ├── cloudbuild.yaml
+├── firebase.json
+├── firestore/
+│   ├── firestore.indexes.json
+│   └── firestore.rules
 ├── jest.config.js
 ├── package.json
 ├── tsconfig.json
@@ -95,13 +99,19 @@ pnb-backend/
 ├── types.ts
 ├── config.ts
 ├── tests/
+│   ├── auth.test.ts
 │   ├── captureService.test.ts
-│   └── healthz.test.ts
+│   ├── healthz.test.ts
+│   └── tracing.test.ts
 ├── lib/
+│   ├── auth.ts
+│   ├── firestoreAdmin.ts
 │   ├── logger.ts
-│   └── requestLogging.ts
+│   ├── requestLogging.ts
+│   └── tracing.ts
 ├── repositories/
-│   └── contextRepository.ts
+│   ├── contextRepository.ts
+│   └── firestoreContextRepository.ts
 ├── routes/
 │   ├── capture.ts
 │   └── healthz.ts
