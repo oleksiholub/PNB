@@ -15,7 +15,8 @@ export type OperationType =
   | "handoff"
   | "selector_config_fetch"
   | "selector_config_publish"
-  | "ci_callback";
+  | "ci_callback"
+  | "retry_task";
 
 export type ResultStatus =
   | "ACCEPTED"
