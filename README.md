@@ -1,7 +1,7 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step F.2.
+репозитория после завершения Sub-step F.3.
 
 ## Статус
 
@@ -12,10 +12,11 @@
 - ✅ Итерация E завершена целиком (E.1–E.3)
 - 🔶 Итерация F в процессе:
   - F.1 — GitHub App authentication service
-  - **F.2 — `githubBranchService.ts`**: обеспечение существования ветки
-    `auto/<session_id>`, создание от HEAD базовой ветки, идемпотентность
-    при повторных вызовах и при 422-race на конкурентное создание
-  - F.3–F.4 (QA-гейт, `POST /push`, `POST /selector-config/refresh`) — впереди
+  - F.2 — `githubBranchService.ts`
+  - **F.3 — QA gate + Git write**: `POST /push/:artifactId`, reject
+    non-PASSED artifacts, push only to `auto/<session_id>`, commit
+    content as a Git blob/tree/commit, update Firestore `push_status`
+  - F.4 — unified push orchestration and selector-config refresh — впереди
 
 ## ⚠️ Открытые компромиссы, требующие внимания
 
@@ -27,12 +28,13 @@
    не специфицирован в ТЗ**.
 5. **Token caching policy для GitHub App (F.1) не специфицирована в ТЗ**.
 6. **Target repository coordinates и default branch (F.2) не
-   специфицированы в ТЗ**: ТЗ упоминает лишь "приватный GitHub-репозиторий"
-   без owner/name/default branch. `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME`
-   и `GITHUB_DEFAULT_BRANCH` вынесены в конфигурацию окружения, а
-   `githubBranchService.ts` принимает `baseBranch` явным параметром, а не
-   зашивает "main" внутри логики — архитектурное решение Development
-   Thread, а не значение из спецификации.
+   специфицированы в ТЗ**.
+7. **Exact commit-log schema for pushed artifacts (F.3) not specified in
+   the TZ**: the spec defines `push_status` states but does not prescribe
+   a separate persisted commit SHA. F.3 therefore uses the durable key
+   `content_hash + target_branch + push_status` for deduplication and
+   treats the Git commit SHA as an implementation detail of the branch
+   write, not as a new Firestore schema field.
 
 ## Итог по браузерному риску (D.1–D.2)
 
@@ -41,21 +43,22 @@
 
 ## Структура проекта
 
-- `backend/src/services/githubBranchService.ts` — `ensureSessionBranch()`:
-  читает HEAD ref базовой ветки через `GET /git/ref/heads/:ref`, создаёт
-  `auto/<session_id>` через `POST /git/refs`, идемпотентно обрабатывает
-  уже существующую ветку и 422-race при конкурентном создании (F.2).
-- `backend/src/config/env.ts` — добавлены `GITHUB_REPO_OWNER`,
-  `GITHUB_REPO_NAME`, `GITHUB_DEFAULT_BRANCH` (default `"main"` только
-  как fallback, не как жёсткое предположение внутри сервиса) (F.2).
-- `backend/.env.example` — добавлены переменные target-репозитория (F.2).
+- `backend/src/routes/push.ts` — `POST /push/:artifactId`: Firestore QA
+  gate, branch provisioning through F.2, Git blob/tree/commit write to
+  `auto/<session_id>`, deduplication via `content_hash` and artifact
+  status, Firestore `push_status` update to `PUSHED_NO_CI` (F.3).
+- `backend/src/services/githubBranchService.ts` — `ensureSessionBranch()`
+  for `auto/<session_id>` with 422-race idempotency (F.2).
+- `backend/src/config/env.ts` — `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME`,
+  `GITHUB_DEFAULT_BRANCH`, plus F.1 vars (F.1/F.2).
+- `backend/.env.example` — GitHub App and repository coordinate placeholders.
 - `backend/src/services/githubAppAuth.ts` — GitHub App auth, RS256 JWT,
   installation access token (F.1).
 - `backend/src/routes/context.ts` — `GET /context/:chatId` (E.3).
 - `backend/src/routes/handoff.ts` — `POST /handoff` (E.2).
-- `backend/src/schemas/handoff.ts` — Zod-схема `/handoff` (E.2).
+- `backend/src/schemas/handoff.ts` — Zod-scheme for `/handoff` (E.2).
 - `backend/src/types/logging.ts` — `operation_type` values.
-- `backend/src/index.ts` — mounted routers (E.2/E.3).
+- `backend/src/index.ts` — mounted routers and `POST /push/:artifactId`.
 - `backend/src/services/summarizationService.ts` — LangGraph.js pipeline (E.1).
 - `backend/src/routes/capture.ts` — async summarization trigger (E.1).
 - `extension/src/injection_engine.js` — DOM-injection, jitter (D.5).
@@ -107,6 +110,7 @@ PNB/
 │   │   │   ├── capture.ts
 │   │   │   ├── context.ts
 │   │   │   ├── handoff.ts
+│   │   │   ├── push.ts
 │   │   │   └── selectorConfig.ts
 │   │   ├── schemas/
 │   │   │   ├── capture.ts
