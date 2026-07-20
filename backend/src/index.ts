@@ -20,6 +20,7 @@ import { handoffRouter } from "./routes/handoff";
 import { contextRouter } from "./routes/context";
 import { qaGateAndPushArtifact } from "./routes/push";
 import { handleCiCallback } from "./routes/ciCallback";
+import { handleRetryTask } from "./routes/retryTask";
 
 function bootstrap() {
   const env = loadEnv();
@@ -57,23 +58,25 @@ function bootstrap() {
   });
 
   app.use(requireFirebaseAuth, captureRouter);
-
   app.use(requireFirebaseAuth, selectorConfigRouter);
-
   app.use(requireFirebaseAuth, handoffRouter);
-
   app.use(requireFirebaseAuth, contextRouter);
-
   app.post("/push/:artifactId", requireFirebaseAuth, qaGateAndPushArtifact);
-
   app.post("/ci-callback", requireGoogleServiceAuth, handleCiCallback);
+
+  // POST /retry-task/:operation (Sub-step H.1) - Cloud Tasks delivers
+  // retry attempts here with exponential backoff already applied at the
+  // queue level (infra/create_retry_queue.sh). Same requireGoogleServiceAuth
+  // middleware as /ci-callback, since Cloud Tasks HTTP targets authenticate
+  // via the same Google-signed OIDC token mechanism as Cloud Build.
+  app.post("/retry-task/:operation", requireGoogleServiceAuth, handleRetryTask);
 
   app.get("/", (req: Request, res: Response) => {
     res.status(200).json({
       service: "pnb-backend",
-      status: "skeleton+capture+auth+firestore+handoff+context+push+selector-config-refresh+ci-callback",
+      status: "skeleton+capture+auth+firestore+handoff+context+push+selector-config-refresh+ci-callback+retry-queue",
       trace_id: req.traceId,
-      note: "Push-pipeline, selector-config publish (F), and CI-callback reporting (G.1) are complete; merge automation is G.2",
+      note: "Push-pipeline, selector-config publish (F), CI-callback+merge automation (G), and retry-queue infrastructure (H.1) are complete; business-logic retry dispatch wiring is an explicit H.1 follow-up",
     });
   });
 
