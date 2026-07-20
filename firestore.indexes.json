@@ -7,6 +7,14 @@
         { "fieldPath": "chat_id", "order": "ASCENDING" },
         { "fieldPath": "content_hash", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "code_artifacts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "target_branch", "order": "ASCENDING" },
+        { "fieldPath": "push_status", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
