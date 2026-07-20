@@ -1,3 +1,10 @@
+/**
+ * PNB Backend entrypoint - L2 Orchestrator (Cloud Run service).
+ * Sub-step C.1: mounts requireFirebaseAuth ahead of captureRouter, so
+ * POST /capture now requires a verified Firebase ID token
+ * (Authorization: Bearer <token>) instead of the unverified x-owner-uid
+ * header used throughout Iteration B.
+ */
 import express, { Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import cors from "cors";
