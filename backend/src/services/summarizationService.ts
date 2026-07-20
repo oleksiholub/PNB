@@ -1,19 +1,19 @@
 /**
- * Memory summarization service via LangGraph.js (Sub-step E.1, RAW_FALLBACK
- * added in H.2).
+ * Memory summarization service via LangGraph.js (Sub-step E.1;
+ * Sub-step H.0 fixed a syntax bug; Sub-step H.2 implements the full
+ * TZ 3.4 error-handling contract for this pipeline).
  *
- * Sub-step H.0 FIX: this file previously contained literal, unescaped
- * newline characters embedded inside the ACTION_VERB_RE regex literal and
- * inside two `.join(" \n ")` string-literal call sites, discovered via
- * direct inspection of the user-provided ZIP archive (Established
- * confidence - verified by reading the actual bytes, not inferred). A
- * literal newline inside an unterminated single-line string/regex literal
- * is invalid JavaScript/TypeScript syntax and would make `tsc` fail to
- * compile this file with "Unterminated string literal" / "Unterminated
- * regular expression literal" errors, blocking the entire backend build.
- * Fixed by replacing the literal newlines with the escaped sequence \n,
- * which is both syntactically valid and semantically equivalent to the
- * original intent (joining history refs with a newline separator).
+ * TZ SECTION 3.4 REQUIREMENTS THIS FILE MUST SATISFY:
+ *   (a) LangGraph THREW an exception -> RAW_FALLBACK written directly
+ *       to memory_blob with a safe truncated raw fragment.
+ *   (b) LangGraph RETURNED an invalid structure -> exactly ONE
+ *       repair-pass attempt before falling back to the deterministic
+ *       serializer.
+ *
+ * GAP FOUND (Established confidence): the H.0 version collapsed both
+ * cases into one branch - a thrown exception was caught by the outer
+ * try/catch and returned without ever writing to memory_blob at all,
+ * meaning requirement (a) was not implemented. Fixed below.
  */
 import { StateGraph, END, START, Annotation } from "@langchain/langgraph";
 import { contextCollection } from "../models/collections";
@@ -25,6 +25,7 @@ export const SUMMARIZATION_TRIGGER_EVERY_N_TURNS = 5;
 const MAX_SUMMARY_CHARS = 4000;
 const AGGRESSIVE_THRESHOLD_REFS = 30;
 const EMERGENCY_THRESHOLD_REFS = 60;
+const RAW_FALLBACK_EXCEPTION_CHARS = 500;
 
 interface GraphState {
   rawHistoryRefs: string[];
@@ -46,17 +47,20 @@ const StateAnnotation = Annotation.Root({
 
 const CAPITALIZED_WORD_RE = /\b[A-ZА-Я][a-zа-я]{2,}\b/g;
 const ACTION_VERB_RE =
-  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?\n]{0,120}/gi;
+  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?
+]{0,120}/gi;
 
 function extractEntitiesNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join("\n");
+  const joined = state.rawHistoryRefs.join("
+");
   const matches = joined.match(CAPITALIZED_WORD_RE) ?? [];
   const unique = Array.from(new Set(matches)).slice(0, 25);
   return { entities: unique };
 }
 
 function extractActionItemsNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join("\n");
+  const joined = state.rawHistoryRefs.join("
+");
   const matches = joined.match(ACTION_VERB_RE) ?? [];
   const trimmed = matches.map((m) => m.trim()).slice(0, 15);
   return { actionItems: trimmed };
@@ -112,6 +116,19 @@ function buildDeterministicFallback(rawHistoryRefs: string[]): {
   };
 }
 
+function buildRawFallbackOnException(rawHistoryRefs: string[]): {
+  summary: string;
+  entities: string[];
+  actionItems: string[];
+} {
+  const joined = rawHistoryRefs.join(" ").slice(0, RAW_FALLBACK_EXCEPTION_CHARS);
+  return {
+    summary: `[RAW_FALLBACK] ${joined}`,
+    entities: [],
+    actionItems: [],
+  };
+}
+
 function pickCompressionLevel(refCount: number): CompressionLevel {
   if (refCount >= EMERGENCY_THRESHOLD_REFS) return "emergency";
   if (refCount >= AGGRESSIVE_THRESHOLD_REFS) return "aggressive";
@@ -120,6 +137,33 @@ function pickCompressionLevel(refCount: number): CompressionLevel {
 
 export function shouldTriggerSummarization(refCount: number): boolean {
   return refCount > 0 && refCount % SUMMARIZATION_TRIGGER_EVERY_N_TURNS === 0;
+}
+
+type AttemptResult =
+  | { outcome: "valid"; summary: string; entities: string[]; actionItems: string[] }
+  | { outcome: "invalid"; invalidReason?: string }
+  | { outcome: "threw"; error: unknown };
+
+async function runSummarizationAttempt(
+  rawHistoryRefs: string[]
+): Promise<AttemptResult> {
+  try {
+    const compiledGraph = buildGraph();
+    const result = await compiledGraph.invoke({ rawHistoryRefs });
+
+    if (!result.valid) {
+      return { outcome: "invalid", invalidReason: result.invalidReason };
+    }
+
+    return {
+      outcome: "valid",
+      summary: result.summary,
+      entities: result.entities,
+      actionItems: result.actionItems,
+    };
+  } catch (error) {
+    return { outcome: "threw", error };
+  }
 }
 
 export async function summarizeAndUpdateMemory(
@@ -144,15 +188,35 @@ export async function summarizeAndUpdateMemory(
     const existing = snap.data() as ChatContextDocument;
     const rawHistoryRefs = existing.memory_blob.raw_history_refs;
 
-    const compiledGraph = buildGraph();
-    const result = await compiledGraph.invoke({ rawHistoryRefs });
+    const firstAttempt = await runSummarizationAttempt(rawHistoryRefs);
 
-    let finalSummary = result.summary;
-    let finalEntities = result.entities;
-    let finalActionItems = result.actionItems;
-    const usedFallback = !result.valid;
+    let finalSummary: string;
+    let finalEntities: string[];
+    let finalActionItems: string[];
+    let usedFallback = false;
 
-    if (usedFallback) {
+    if (firstAttempt.outcome === "valid") {
+      finalSummary = firstAttempt.summary;
+      finalEntities = firstAttempt.entities;
+      finalActionItems = firstAttempt.actionItems;
+    } else if (firstAttempt.outcome === "threw") {
+      usedFallback = true;
+      withLogContext({
+        trace_id: traceId,
+        chat_id: chatId,
+        operation_type: "summarize_memory",
+        result_status: "INTERNAL_ERROR",
+        retry_count: 0,
+      }).error(
+        { err: firstAttempt.error },
+        "LangGraph summarization threw an exception, writing RAW_FALLBACK per TZ 3.4(a)"
+      );
+
+      const rawFallback = buildRawFallbackOnException(rawHistoryRefs);
+      finalSummary = rawFallback.summary;
+      finalEntities = rawFallback.entities;
+      finalActionItems = rawFallback.actionItems;
+    } else {
       withLogContext({
         trace_id: traceId,
         chat_id: chatId,
@@ -160,14 +224,47 @@ export async function summarizeAndUpdateMemory(
         result_status: "VALIDATION_FAILED",
         retry_count: 0,
       }).warn(
-        { reason: result.invalidReason },
-        "LangGraph summarization output failed validation, using deterministic RAW_FALLBACK serializer"
+        { reason: firstAttempt.invalidReason },
+        "LangGraph summarization returned invalid structure, attempting one repair-pass per TZ 3.4(b)"
       );
 
-      const fallback = buildDeterministicFallback(rawHistoryRefs);
-      finalSummary = fallback.summary;
-      finalEntities = fallback.entities;
-      finalActionItems = fallback.actionItems;
+      const repairAttempt = await runSummarizationAttempt(rawHistoryRefs);
+
+      if (repairAttempt.outcome === "valid") {
+        withLogContext({
+          trace_id: traceId,
+          chat_id: chatId,
+          operation_type: "summarize_memory",
+          result_status: "ACCEPTED",
+          retry_count: 1,
+        }).info("repair-pass succeeded, using repaired summarization output");
+
+        finalSummary = repairAttempt.summary;
+        finalEntities = repairAttempt.entities;
+        finalActionItems = repairAttempt.actionItems;
+      } else {
+        usedFallback = true;
+        withLogContext({
+          trace_id: traceId,
+          chat_id: chatId,
+          operation_type: "summarize_memory",
+          result_status: "VALIDATION_FAILED",
+          retry_count: 1,
+        }).warn(
+          {
+            reason:
+              repairAttempt.outcome === "invalid"
+                ? repairAttempt.invalidReason
+                : "repair_pass_threw",
+          },
+          "repair-pass also failed, using deterministic RAW_FALLBACK serializer per TZ 3.4(b)"
+        );
+
+        const fallback = buildDeterministicFallback(rawHistoryRefs);
+        finalSummary = fallback.summary;
+        finalEntities = fallback.entities;
+        finalActionItems = fallback.actionItems;
+      }
     }
 
     const updatedMemoryBlob: MemoryBlob = {
