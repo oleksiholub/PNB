@@ -1,7 +1,7 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step F.3.
+репозитория после завершения Sub-step F.4 — **Итерация F завершена целиком**.
 
 ## Статус
 
@@ -10,13 +10,14 @@
 - ✅ Итерация C завершена (C.1–C.2)
 - ✅ Итерация D завершена целиком (D.1–D.5)
 - ✅ Итерация E завершена целиком (E.1–E.3)
-- 🔶 Итерация F в процессе:
+- ✅ **Итерация F завершена целиком (F.1–F.4)**:
   - F.1 — GitHub App authentication service
   - F.2 — `githubBranchService.ts`
-  - **F.3 — QA gate + Git write**: `POST /push/:artifactId`, reject
-    non-PASSED artifacts, push only to `auto/<session_id>`, commit
-    content as a Git blob/tree/commit, update Firestore `push_status`
-  - F.4 — unified push orchestration and selector-config refresh — впереди
+  - F.3 — QA gate + Git write (`POST /push/:artifactId`)
+  - **F.4 — `POST /selector-config/refresh`**: закрывает последний пробел
+    в API-контракте (публикация selector-config, а не только чтение
+    из D.3), с той же структурной валидацией, что применяется на стороне
+    extension, и с `version` как идемпотентным ключом публикации
 
 ## ⚠️ Открытые компромиссы, требующие внимания
 
@@ -30,11 +31,21 @@
 6. **Target repository coordinates и default branch (F.2) не
    специфицированы в ТЗ**.
 7. **Exact commit-log schema for pushed artifacts (F.3) not specified in
-   the TZ**: the spec defines `push_status` states but does not prescribe
-   a separate persisted commit SHA. F.3 therefore uses the durable key
-   `content_hash + target_branch + push_status` for deduplication and
-   treats the Git commit SHA as an implementation detail of the branch
-   write, not as a new Firestore schema field.
+   the TZ**: uses `content_hash + target_branch + push_status` as the
+   durable deduplication key instead of a dedicated commit-SHA field.
+8. **`handoff_trigger_markers` enforcement scope for selector-config
+   publish (F.4) not fully specified in the TZ**: mirroring the
+   extension-side validator, this field is present in the TZ's example
+   JSON but not enforced as strictly required by
+   `SelectorConfigPayloadSchema` on the backend — a deliberate, disclosed
+   parity choice rather than a stricter independent backend rule that
+   could reject configs the extension itself would accept.
+9. **Bugfix note (discovered during F.4)**: the original D.3 GET handler
+   logged non-existent `ResultStatus` values (`"PENDING"`, `"OK"`,
+   `"NOT_FOUND"`, `"ERROR"`); this was corrected in-place to use only the
+   three values defined in `types/logging.ts` (`ACCEPTED`,
+   `VALIDATION_FAILED`, `INTERNAL_ERROR`), fixing a latent TypeScript
+   type-safety gap alongside the new F.4 code in the same file.
 
 ## Итог по браузерному риску (D.1–D.2)
 
@@ -43,10 +54,17 @@
 
 ## Структура проекта
 
-- `backend/src/routes/push.ts` — `POST /push/:artifactId`: Firestore QA
-  gate, branch provisioning through F.2, Git blob/tree/commit write to
-  `auto/<session_id>`, deduplication via `content_hash` and artifact
-  status, Firestore `push_status` update to `PUSHED_NO_CI` (F.3).
+- `backend/src/routes/selectorConfig.ts` — `GET /selector-config/current`
+  (D.3, bugfixed logging) и **`POST /selector-config/refresh`** (F.4):
+  публикация новой selector-config версии, обновление указателя
+  `configs/selectors/versions/current` в одной batched-транзакции.
+- `backend/src/schemas/selectorConfig.ts` — Zod-схема структурной
+  валидации selector-config payload, зеркалирующая клиентский валидатор
+  extension (F.4).
+- `backend/src/types/logging.ts` — добавлены `selector_config_fetch`,
+  `selector_config_publish` в `OperationType` (F.4).
+- `backend/src/routes/push.ts` — `POST /push/:artifactId`: QA gate,
+  branch provisioning, Git blob/tree/commit write, `push_status` update (F.3).
 - `backend/src/services/githubBranchService.ts` — `ensureSessionBranch()`
   for `auto/<session_id>` with 422-race idempotency (F.2).
 - `backend/src/config/env.ts` — `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME`,
@@ -57,8 +75,8 @@
 - `backend/src/routes/context.ts` — `GET /context/:chatId` (E.3).
 - `backend/src/routes/handoff.ts` — `POST /handoff` (E.2).
 - `backend/src/schemas/handoff.ts` — Zod-scheme for `/handoff` (E.2).
-- `backend/src/types/logging.ts` — `operation_type` values.
-- `backend/src/index.ts` — mounted routers and `POST /push/:artifactId`.
+- `backend/src/index.ts` — mounted routers; `/` status string now
+  reflects push+selector-config-refresh completion (F.4).
 - `backend/src/services/summarizationService.ts` — LangGraph.js pipeline (E.1).
 - `backend/src/routes/capture.ts` — async summarization trigger (E.1).
 - `extension/src/injection_engine.js` — DOM-injection, jitter (D.5).
@@ -69,7 +87,6 @@
 - `extension/src/dom_observer.js` — `MutationObserver` (D.2).
 - `extension/src/content_script.js`, `service_worker.js` — L1 orchestration (D.1-D.5).
 - `extension/manifest.json` — Manifest V3 (D.1-D.5).
-- `backend/src/routes/selectorConfig.ts` — `GET /selector-config/current` (D.3).
 - `firestore.rules`, `firebase.json`, `firestore.indexes.json`.
 - `backend/src/middleware/firebaseAuth.ts`, `serviceAuth.ts`.
 - `backend/src/services/deadLetterService.ts`.
@@ -114,7 +131,8 @@ PNB/
 │   │   │   └── selectorConfig.ts
 │   │   ├── schemas/
 │   │   │   ├── capture.ts
-│   │   │   └── handoff.ts
+│   │   │   ├── handoff.ts
+│   │   │   └── selectorConfig.ts
 │   │   ├── services/
 │   │   │   ├── deadLetterService.ts
 │   │   │   ├── githubAppAuth.ts
