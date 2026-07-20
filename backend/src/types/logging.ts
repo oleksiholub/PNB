@@ -3,7 +3,9 @@ export type OperationType =
   | "capture_code_artifact"
   | "healthz_check"
   | "summarize_memory"
-  | "handoff";
+  | "handoff"
+  | "selector_config_fetch"
+  | "selector_config_publish";
 
 export type ResultStatus =
   | "ACCEPTED"
