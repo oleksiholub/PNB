@@ -11,6 +11,23 @@
  * Firestore round-trip per conversation-turn capture.
  */
 /**
+ * Sub-step H.3 addition: the conversation-turn branch (NOT the
+ * code_artifact branch - see captureBatchBuffer.ts SCOPE DISCLOSURE for
+ * why code artifacts are excluded) now consults getQuotaGovernor() per
+ * TZ 3.4's Firestore-quota-pressure clause before deciding how to
+ * persist:
+ *   - "normal" mode: unchanged synchronous docRef.set(), same as H.0.
+ *   - "aggressive"/"deferred" mode: the update is handed to
+ *     enqueueBatchedCapture() (services/captureBatchBuffer.ts) instead
+ *     of being written immediately, and the HTTP response honestly
+ *     reports `persisted: false, batched: true` rather than claiming
+ *     synchronous persistence that did not happen.
+ * Background summarization cadence is also throttled under quota
+ * pressure: halved frequency under "aggressive", skipped entirely for
+ * the current turn under "deferred" - see the inline comment at the
+ * summarization-trigger block below for the exact TZ 3.4 mapping.
+ */
+/**
  * POST /capture route handler.
  *
  * Sub-step C.1 change: owner_uid is now sourced exclusively from
@@ -55,6 +72,8 @@ import {
   shouldTriggerSummarization,
   SUMMARIZATION_TRIGGER_EVERY_N_TURNS,
 } from "../services/summarizationService";
+import { getQuotaGovernor } from "../services/quotaGovernor";
+import { enqueueBatchedCapture } from "../services/captureBatchBuffer";
 
 export const captureRouter = Router();
 
@@ -247,6 +266,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
     const nowIso = new Date().toISOString();
     const existingSnap = await docRef.get();
     let refCountLocal = 0;
+    let mergedMemoryBlobUpdate: Partial<ChatContextDocument>;
 
     if (existingSnap.exists) {
       const existingData = existingSnap.data() as ChatContextDocument;
@@ -275,25 +295,13 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
         ...existingData.memory_blob.raw_history_refs,
         rawRef,
       ];
-      await docRef.set(
-        {
-          ...existingData,
-          last_interaction: nowIso,
-          memory_blob: {
-            ...existingData.memory_blob,
-            raw_history_refs: updatedRefs,
-          },
+      mergedMemoryBlobUpdate = {
+        last_interaction: nowIso,
+        memory_blob: {
+          ...existingData.memory_blob,
+          raw_history_refs: updatedRefs,
         },
-        { merge: true }
-      );
-      // Sub-step H.0 FIX: refCount is now tracked locally (updatedRefs.length)
-      // instead of re-reading the just-written document from Firestore
-      // below - the previous code performed an extra await docRef.get()
-      // purely to learn a length it had already computed in memory one
-      // line above, an unnecessary round-trip (Likely-confidence
-      // performance issue, not a correctness bug, since the two values
-      // were always consistent - fixed as a low-risk optimization while
-      // already touching this code path for H.0).
+      };
       refCountLocal = updatedRefs.length;
     } else {
       const initialRefs = [parsed.user_message ?? parsed.model_response ?? ""];
@@ -314,8 +322,31 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
           compression_level: "normal",
         },
       };
-      await docRef.set(newDoc);
+      mergedMemoryBlobUpdate = newDoc;
       refCountLocal = initialRefs.length;
+    }
+
+    // Sub-step H.3: consult the per-instance QuotaGovernor BEFORE deciding
+    // how to persist this conversation-turn update, per TZ 3.4's
+    // "объединять несколько capture-событий в батч" / "переводить
+    // не-критичные операции в deferred mode" directives. Conversation
+    // capture (unlike code_artifact capture, which is always written
+    // synchronously - see captureBatchBuffer.ts SCOPE DISCLOSURE) is
+    // treated as non-critical and is eligible for batching once write
+    // pressure is elevated.
+    const quotaGovernor = getQuotaGovernor();
+    const quotaMode = quotaGovernor.getQuotaMode();
+    let batched = false;
+
+    if (quotaMode === "normal") {
+      await docRef.set(mergedMemoryBlobUpdate, { merge: true });
+      quotaGovernor.recordWrite();
+    } else {
+      // "aggressive" or "deferred": defer the actual Firestore write and
+      // fold it into the next batch flush (captureBatchBuffer.ts) instead
+      // of writing synchronously on every request.
+      enqueueBatchedCapture(chat_id, traceId, mergedMemoryBlobUpdate);
+      batched = true;
     }
 
     withLogContext({
@@ -325,38 +356,67 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       operation_type: "capture_conversation",
       result_status: "ACCEPTED",
       retry_count: 0,
-    }).info("conversation turn captured and persisted to Firestore");
+    }).info(
+      { quota_mode: quotaMode, batched },
+      "conversation turn captured" +
+        (batched
+          ? " and enqueued for batched Firestore persistence (TZ 3.4 quota-pressure batching)"
+          : " and persisted to Firestore")
+    );
 
     const refCount = refCountLocal;
 
+    // Sub-step H.3: "reduce background update frequency" per TZ 3.4 -
+    // under "aggressive" quota mode, summarization still fires but at
+    // HALF the normal cadence (every 2*N turns instead of every N);
+    // under "deferred" quota mode, summarization (a non-critical
+    // background operation) is skipped entirely for this turn rather
+    // than merely slowed down, consistent with the TZ's harder-threshold
+    // "deferred mode for non-critical operations" language. This is
+    // applied strictly on top of shouldTriggerSummarization()'s existing
+    // cadence check, never in place of it.
     let summarizationTriggered = false;
-    if (shouldTriggerSummarization(refCount)) {
-      summarizationTriggered = true;
-      // Fire-and-forget: summarization must never block or fail the
-      // capture response - TZ 3.3 treats it as an async orchestration
-      // step, not a synchronous part of the capture contract.
-      summarizeAndUpdateMemory(chat_id, traceId).catch((err) => {
-        withLogContext({
-          trace_id: traceId,
-          chat_id,
-          session_id,
-          operation_type: "summarize_memory",
-          result_status: "INTERNAL_ERROR",
-          retry_count: 0,
-        }).error({ err }, "unhandled rejection from summarizeAndUpdateMemory");
-      });
+    if (quotaMode !== "deferred") {
+      const effectiveTriggerEvery =
+        quotaMode === "aggressive"
+          ? SUMMARIZATION_TRIGGER_EVERY_N_TURNS * 2
+          : SUMMARIZATION_TRIGGER_EVERY_N_TURNS;
+
+      const dueByQuotaAdjustedCadence =
+        refCount > 0 && refCount % effectiveTriggerEvery === 0;
+
+      if (shouldTriggerSummarization(refCount) && dueByQuotaAdjustedCadence) {
+        summarizationTriggered = true;
+        // Fire-and-forget: summarization must never block or fail the
+        // capture response - TZ 3.3 treats it as an async orchestration
+        // step, not a synchronous part of the capture contract.
+        summarizeAndUpdateMemory(chat_id, traceId).catch((err) => {
+          withLogContext({
+            trace_id: traceId,
+            chat_id,
+            session_id,
+            operation_type: "summarize_memory",
+            result_status: "INTERNAL_ERROR",
+            retry_count: 0,
+          }).error({ err }, "unhandled rejection from summarizeAndUpdateMemory");
+        });
+      }
     }
 
     res.status(202).json({
       accepted: true,
-      persisted: true,
+      persisted: !batched,
+      batched,
       trace_id: traceId,
       chat_id,
       session_id,
+      quota_mode: quotaMode,
       summarization_triggered: summarizationTriggered,
-      note: summarizationTriggered
-        ? "Summarization pipeline triggered asynchronously (LangGraph.js, extractive interim summarizer - see Sub-step E.1 README)."
-        : `Summarization triggers every ${SUMMARIZATION_TRIGGER_EVERY_N_TURNS} turns; client-side encryption of memory_blob is implemented in a later sub-step.`,
+      note: batched
+        ? "Firestore write for this turn was batched due to elevated write pressure (Sub-step H.3 quota governor); it will be flushed within a few seconds, not immediately persisted."
+        : summarizationTriggered
+          ? "Summarization pipeline triggered asynchronously (LangGraph.js, extractive interim summarizer - see Sub-step E.1 README)."
+          : `Summarization triggers every ${SUMMARIZATION_TRIGGER_EVERY_N_TURNS} turns (adjusted under quota pressure per Sub-step H.3); client-side encryption of memory_blob is implemented in a later sub-step.`,
     });
   } catch (err) {
     withLogContext({
