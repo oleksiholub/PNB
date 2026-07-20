@@ -48,6 +48,11 @@ export interface CodeArtifactDocument {
   // PENDING/REJECTED_BY_QA_GATE/PUSHED_NO_CI).
   ci_build_id?: string;
   ci_commit_sha?: string;
+  // Sub-step G.2 addition: populated by ciCallback.ts's merge-on-green-CI
+  // step (githubMergeService.ts) once push_status transitions to MERGED.
+  // Absent when push_status is REQUIRES_REVIEW (no merge commit exists
+  // in that case) or for any earlier push_status value.
+  merge_commit_sha?: string;
 }
 
 export interface ChatContextDocument {
