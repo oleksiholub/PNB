@@ -1,5 +1,6 @@
 /**
- * POST /retry-task/:operation route handler (Sub-step H.1).
+ * POST /retry-task/:operation route handler (Sub-step H.1; business
+ * logic dispatch wired in Sub-step H.3.5).
  *
  * Receives HTTP task deliveries FROM Cloud Tasks (retryQueueService.ts
  * enqueues these) and re-executes the named failed operation. If Cloud
@@ -19,37 +20,51 @@
  * avoids the two-source-of-truth drift risk called out in
  * retryQueueService.ts's header.
  *
- * OPERATION DISPATCH (explicit gap disclosure): this handler currently
- * supports only a generic "record-and-either-retry-signal-or-dead-
- * letter" flow; it does NOT itself know how to literally re-run
- * capture-ingestion or summarization business logic, because doing so
- * would require importing and safely re-invoking those modules' current
- * internal functions, which this session has not independently
- * re-verified the current signatures of within this sub-step. Per the
- * Anti-Sycophancy / Symmetric Self-Verification rule against fabricating
- * unseen file internals, this handler responds with a 501 for any
- * operation name it does not have an explicitly wired handler for
- * (currently none are wired), and existing failure call sites are NOT
- * yet switched over to route through this queue - see
- * retryQueueService.ts's "INTEGRATION DISCLOSURE" for the matching gap
- * on the enqueue side. This sub-step therefore delivers the
- * queue+backoff+exhaustion INFRASTRUCTURE per TZ 3.4, with actual
- * business-logic dispatch left as an explicit, disclosed follow-up
- * rather than silently faked with a placeholder no-op that would look
- * complete but do nothing real.
+ * Sub-step H.3.5 UPDATE (closes a gap carried over, undocumented, from
+ * the original implementation plan's H.2 line item "подключение
+ * реальной бизнес-логики в OPERATION_HANDLERS" - that specific task was
+ * NOT actually done during H.2, which only implemented the summarization
+ * error-handling contract; see README H.3.5 section for the full trace):
+ * OPERATION_HANDLERS now wires two real handlers -
+ * "capture_conversation" -> retryConversationCapture() and
+ * "capture_code_artifact" -> retryCodeArtifactCapture()
+ * (services/captureRetryHandlers.ts). Both re-run the exact same
+ * Firestore write capture.ts's own try block attempts on first pass,
+ * with idempotency checks so a Cloud-Tasks-redelivered retry can never
+ * create a duplicate artifact or double-append a conversation turn -
+ * see captureRetryHandlers.ts's IDEMPOTENCY STRATEGY disclosure for the
+ * exact guarantees and their limits.
+ *
+ * REMAINING EXPLICIT GAP (Established, not silently hidden): "push" and
+ * "ci_callback" operation types are NOT wired here. routes/push.ts and
+ * routes/ciCallback.ts do not currently call enqueueRetryTask() on
+ * failure (they still write directly to dead_letter via
+ * recordDeadLetter(), unchanged from prior sub-steps) - so no retry task
+ * for those operation types is ever actually enqueued today, and adding
+ * a handler here for them would be dead code with no caller. Wiring
+ * push/CI retry-on-failure through this same queue is left as a
+ * follow-up item, tracked in README as an open compromise, rather than
+ * fabricated here as an unused handler.
  */
 import { Request, Response } from "express";
 import { deadLetterCollection } from "../models/collections";
 import { withLogContext } from "../logger";
 import { loadEnv } from "../config/env";
+import {
+  retryConversationCapture,
+  retryCodeArtifactCapture,
+} from "../services/captureRetryHandlers";
 
 type OperationHandler = (payload: unknown) => Promise<void>;
 
 const OPERATION_HANDLERS: Record<string, OperationHandler> = {
-  // Sub-step H.1 explicit gap: no operations are wired yet. Adding an
-  // entry here is how a future sub-step connects a real business-logic
-  // retry (e.g. "capture_conversation": reRunCaptureIngestion) instead
-  // of falling through to the 501 branch below.
+  // Sub-step H.3.5: real business-logic handlers, re-running the exact
+  // Firestore write capture.ts attempts on first pass. See
+  // services/captureRetryHandlers.ts for the full idempotency contract.
+  capture_conversation: retryConversationCapture,
+  capture_code_artifact: retryCodeArtifactCapture,
+  // "push" and "ci_callback" intentionally NOT wired - see file header
+  // REMAINING EXPLICIT GAP above.
 };
 
 export async function handleRetryTask(req: Request, res: Response): Promise<void> {
@@ -84,13 +99,13 @@ export async function handleRetryTask(req: Request, res: Response): Promise<void
       retry_count: retryCount,
     }).warn(
       { operation },
-      "retry-task received for an operation with no wired handler yet (explicit H.1 gap, not a silent no-op)"
+      "retry-task received for an operation with no wired handler (see file header REMAINING EXPLICIT GAP for push/ci_callback)"
     );
     res.status(501).json({
       error: "operation_not_wired",
       operation,
       trace_id: traceId,
-      note: "H.1 delivers retry queue infrastructure; business-logic dispatch for this operation is an explicit follow-up, not yet implemented.",
+      note: "capture_conversation and capture_code_artifact are wired as of Sub-step H.3.5; push/ci_callback retry dispatch is a disclosed follow-up, not yet implemented.",
     });
     return;
   }
