@@ -1,10 +1,3 @@
-/**
- * PNB Backend entrypoint - L2 Orchestrator (Cloud Run service).
- * Sub-step C.1: mounts requireFirebaseAuth ahead of captureRouter, so
- * POST /capture now requires a verified Firebase ID token
- * (Authorization: Bearer <token>) instead of the unverified x-owner-uid
- * header used throughout Iteration B.
- */
 import express, { Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import cors from "cors";
@@ -17,6 +10,7 @@ import { captureRouter } from "./routes/capture";
 import { selectorConfigRouter } from "./routes/selectorConfig";
 import { handoffRouter } from "./routes/handoff";
 import { contextRouter } from "./routes/context";
+import { qaGateAndPushArtifact } from "./routes/push";
 
 function bootstrap() {
   const env = loadEnv();
@@ -65,6 +59,9 @@ function bootstrap() {
 
   // GET /context/:chatId (Sub-step E.3) - read-side for resumed sessions
   app.use(requireFirebaseAuth, contextRouter);
+
+  // POST /push/{artifactId} (Sub-step F.3) - QA gate + commit to session branch
+  app.post("/push/:artifactId", requireFirebaseAuth, qaGateAndPushArtifact);
 
   app.get("/", (req: Request, res: Response) => {
     res.status(200).json({
