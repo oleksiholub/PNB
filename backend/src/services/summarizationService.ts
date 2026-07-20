@@ -3,6 +3,13 @@
  * Sub-step H.0 fixed a syntax bug; Sub-step H.2 implements the full
  * TZ 3.4 error-handling contract for this pipeline).
  *
+ * Sub-step H.3 addition: pickCompressionLevel() now also consults
+ * services/quotaGovernor.ts so that, per TZ 3.4's "включить более
+ * агрессивную суммаризацию" clause, elevated Firestore write pressure
+ * forces a floor on compression_level (aggressive/emergency) regardless
+ * of raw_history_refs.length alone. See pickCompressionLevel() below for
+ * the exact floor-vs-override semantics.
+ *
  * TZ SECTION 3.4 REQUIREMENTS THIS FILE MUST SATISFY (quoted, translated):
  *   (a) "Если LangGraph.js завершился ошибкой на суммаризации, исходный
  *       capture сохраняется как RAW_FALLBACK, а в память временно
@@ -51,6 +58,7 @@ import { StateGraph, END, START, Annotation } from "@langchain/langgraph";
 import { contextCollection } from "../models/collections";
 import { MemoryBlob, CompressionLevel, ChatContextDocument } from "../models/types";
 import { withLogContext } from "../logger";
+import { getQuotaGovernor, QuotaMode } from "./quotaGovernor";
 
 export const SUMMARIZATION_TRIGGER_EVERY_N_TURNS = 5;
 
@@ -79,17 +87,20 @@ const StateAnnotation = Annotation.Root({
 
 const CAPITALIZED_WORD_RE = /\b[A-ZА-Я][a-zа-я]{2,}\b/g;
 const ACTION_VERB_RE =
-  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?\n]{0,120}/gi;
+  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?
+]{0,120}/gi;
 
 function extractEntitiesNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join("\n");
+  const joined = state.rawHistoryRefs.join("
+");
   const matches = joined.match(CAPITALIZED_WORD_RE) ?? [];
   const unique = Array.from(new Set(matches)).slice(0, 25);
   return { entities: unique };
 }
 
 function extractActionItemsNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join("\n");
+  const joined = state.rawHistoryRefs.join("
+");
   const matches = joined.match(ACTION_VERB_RE) ?? [];
   const trimmed = matches.map((m) => m.trim()).slice(0, 15);
   return { actionItems: trimmed };
@@ -168,10 +179,47 @@ function buildRawFallbackOnException(rawHistoryRefs: string[]): {
   };
 }
 
-function pickCompressionLevel(refCount: number): CompressionLevel {
-  if (refCount >= EMERGENCY_THRESHOLD_REFS) return "emergency";
-  if (refCount >= AGGRESSIVE_THRESHOLD_REFS) return "aggressive";
-  return "normal";
+/**
+ * Sub-step H.3 update: pickCompressionLevel() now also accepts the
+ * current QuotaMode (services/quotaGovernor.ts) and escalates the
+ * ref-count-based level per TZ 3.4's "включить более агрессивную
+ * суммаризацию" directive when Firestore write pressure is elevated -
+ * "aggressive" quota mode floors the result at "aggressive" even if
+ * refCount alone would say "normal"; "deferred" quota mode floors the
+ * result at "emergency" (the most compressed level this schema
+ * supports - TZ 4 defines only normal|aggressive|emergency, so
+ * "deferred" quota mode maps to the strongest existing compression
+ * level rather than inventing a new one). This is a floor, not an
+ * override: a refCount that already independently warrants "emergency"
+ * stays "emergency" regardless of quota mode.
+ */
+function pickCompressionLevel(
+  refCount: number,
+  quotaMode: QuotaMode = "normal"
+): CompressionLevel {
+  const refCountLevel: CompressionLevel =
+    refCount >= EMERGENCY_THRESHOLD_REFS
+      ? "emergency"
+      : refCount >= AGGRESSIVE_THRESHOLD_REFS
+        ? "aggressive"
+        : "normal";
+
+  const levelRank: Record<CompressionLevel, number> = {
+    normal: 0,
+    aggressive: 1,
+    emergency: 2,
+  };
+
+  const quotaFloor: CompressionLevel =
+    quotaMode === "deferred"
+      ? "emergency"
+      : quotaMode === "aggressive"
+        ? "aggressive"
+        : "normal";
+
+  return levelRank[quotaFloor] > levelRank[refCountLevel]
+    ? quotaFloor
+    : refCountLevel;
 }
 
 export function shouldTriggerSummarization(refCount: number): boolean {
@@ -326,7 +374,10 @@ export async function summarizeAndUpdateMemory(
       summary: finalSummary,
       entities: finalEntities,
       action_items: finalActionItems,
-      compression_level: pickCompressionLevel(rawHistoryRefs.length),
+      compression_level: pickCompressionLevel(
+        rawHistoryRefs.length,
+        getQuotaGovernor().getQuotaMode()
+      ),
     };
 
     await docRef.set({ memory_blob: updatedMemoryBlob }, { merge: true });
