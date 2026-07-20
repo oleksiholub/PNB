@@ -51,3 +51,26 @@ export function selectorConfigsCollection(): CollectionReference<SelectorConfigD
     "selector_configs"
   );
 }
+
+// Sub-step H.0 FIX: routes/selectorConfig.ts previously bypassed this
+// models/collections.ts module entirely and called getFirestoreDb()
+// directly to write to TWO different, uncoordinated Firestore paths
+// ("selector_configs/{version}" via one raw collection() call AND
+// "configs/selectors/versions/current" via a second, structurally
+// different nested-subcollection path) for what is supposed to be the
+// SAME logical "currently published selector config" concept. This is a
+// genuine data-consistency bug (Established confidence, found by
+// directly comparing the write paths in the two files): a reader of
+// selectorConfigsCollection() would never see what GET
+// /selector-config/current actually serves, since that route reads from
+// the second, unrelated path. Fixed by adding one canonical accessor for
+// the "current" pointer document here, so both the publish (POST) and
+// fetch (GET) routes read/write through models/collections.ts exclusively
+// - no other module should call getFirestoreDb() directly for selector
+// config anymore.
+export function currentSelectorConfigDoc() {
+  return getFirestoreDb()
+    .collection("selector_configs")
+    .doc("__current__")
+    .withConverter(converter<SelectorConfigDocument>());
+}
