@@ -3,17 +3,49 @@
  * Sub-step H.0 fixed a syntax bug; Sub-step H.2 implements the full
  * TZ 3.4 error-handling contract for this pipeline).
  *
- * TZ SECTION 3.4 REQUIREMENTS THIS FILE MUST SATISFY:
- *   (a) LangGraph THREW an exception -> RAW_FALLBACK written directly
- *       to memory_blob with a safe truncated raw fragment.
- *   (b) LangGraph RETURNED an invalid structure -> exactly ONE
- *       repair-pass attempt before falling back to the deterministic
- *       serializer.
+ * TZ SECTION 3.4 REQUIREMENTS THIS FILE MUST SATISFY (quoted, translated):
+ *   (a) "Если LangGraph.js завершился ошибкой на суммаризации, исходный
+ *       capture сохраняется как RAW_FALLBACK, а в память временно
+ *       записывается сырой укороченный фрагмент по безопасному лимиту
+ *       размера." -> triggered when the graph THROWS (an exception),
+ *       not merely produces invalid output.
+ *   (b) "Если LangGraph.js вернул невалидную структуру (missing entities,
+ *       broken JSON, oversized output), backend выполняет одну попытку
+ *       repair-pass; при повторной неудаче включается deterministic
+ *       fallback serializer." -> triggered when the graph COMPLETES but
+ *       validateNode() marks the result invalid; exactly ONE additional
+ *       repair attempt must be made before falling back to the
+ *       deterministic serializer.
  *
- * GAP FOUND (Established confidence): the H.0 version collapsed both
- * cases into one branch - a thrown exception was caught by the outer
- * try/catch and returned without ever writing to memory_blob at all,
- * meaning requirement (a) was not implemented. Fixed below.
+ * SUB-STEP H.2 GAP FOUND AND FIXED (Established confidence, found by
+ * direct comparison of the prior implementation against the TZ text
+ * above): the prior version of this file collapsed both (a) and (b)
+ * into a single code path - ANY invalid-or-thrown outcome went straight
+ * to buildDeterministicFallback() with zero repair attempts, and a
+ * THROWN exception from compiledGraph.invoke() was caught by the
+ * OUTER try/catch and returned `{ updated: false, usedFallback: false }`
+ * WITHOUT ever writing anything to memory_blob - meaning requirement (a)
+ * was not implemented at all: an exception left the stored memory_blob
+ * completely stale rather than being overwritten with a RAW_FALLBACK
+ * truncated fragment as the TZ mandates. This sub-step fixes both gaps:
+ *   - runSummarizationAttempt() wraps a single compiledGraph.invoke()
+ *     call and normalizes both "threw" and "returned invalid" into one
+ *     { ok: boolean, ... } result shape, but the two cases are tagged
+ *     differently (`threw` vs `invalid`) so callers can apply the
+ *     correct TZ behavior to each.
+ *   - On a THROWN exception, summarizeAndUpdateMemory() now writes a
+ *     RAW_FALLBACK summary (via buildRawFallbackOnException(), capped at
+ *     RAW_FALLBACK_EXCEPTION_CHARS) directly to memory_blob instead of
+ *     silently returning without persisting anything - satisfying
+ *     requirement (a).
+ *   - On an INVALID (but non-throwing) result, the pipeline now retries
+ *     the graph invocation exactly once ("repair-pass") before falling
+ *     back to buildDeterministicFallback() - satisfying requirement (b).
+ *     The repair-pass reuses the same compiled graph and rawHistoryRefs;
+ *     it is a deliberately simple immediate retry rather than a
+ *     different repair strategy, since the TZ does not specify what a
+ *     "repair" transformation should look like beyond "one more attempt"
+ *     - this is disclosed rather than inventing unrequested repair logic.
  */
 import { StateGraph, END, START, Annotation } from "@langchain/langgraph";
 import { contextCollection } from "../models/collections";
@@ -47,20 +79,17 @@ const StateAnnotation = Annotation.Root({
 
 const CAPITALIZED_WORD_RE = /\b[A-ZА-Я][a-zа-я]{2,}\b/g;
 const ACTION_VERB_RE =
-  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?
-]{0,120}/gi;
+  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?\n]{0,120}/gi;
 
 function extractEntitiesNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join("
-");
+  const joined = state.rawHistoryRefs.join("\n");
   const matches = joined.match(CAPITALIZED_WORD_RE) ?? [];
   const unique = Array.from(new Set(matches)).slice(0, 25);
   return { entities: unique };
 }
 
 function extractActionItemsNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join("
-");
+  const joined = state.rawHistoryRefs.join("\n");
   const matches = joined.match(ACTION_VERB_RE) ?? [];
   const trimmed = matches.map((m) => m.trim()).slice(0, 15);
   return { actionItems: trimmed };
@@ -116,6 +145,16 @@ function buildDeterministicFallback(rawHistoryRefs: string[]): {
   };
 }
 
+/**
+ * Sub-step H.2 addition: builds the RAW_FALLBACK payload for TZ 3.4
+ * requirement (a) - a THROWN LangGraph exception, as opposed to a
+ * returned-but-invalid structure (requirement (b), handled separately
+ * via the repair-pass). Deliberately reuses the same "[RAW_FALLBACK] "
+ * prefix convention as buildDeterministicFallback() so both fallback
+ * paths are visually identifiable in stored memory_blob.summary values,
+ * but is kept as a distinct function since the TZ describes them as two
+ * separate failure conditions with two separate trigger clauses.
+ */
 function buildRawFallbackOnException(rawHistoryRefs: string[]): {
   summary: string;
   entities: string[];
@@ -144,6 +183,13 @@ type AttemptResult =
   | { outcome: "invalid"; invalidReason?: string }
   | { outcome: "threw"; error: unknown };
 
+/**
+ * Sub-step H.2 addition: runs exactly one compiled-graph invocation and
+ * normalizes its outcome into one of three tagged states so the caller
+ * can apply the TZ's two DIFFERENT fallback behaviors correctly instead
+ * of collapsing "threw" and "returned invalid" into the same branch (the
+ * bug this sub-step fixes).
+ */
 async function runSummarizationAttempt(
   rawHistoryRefs: string[]
 ): Promise<AttemptResult> {
@@ -200,6 +246,10 @@ export async function summarizeAndUpdateMemory(
       finalEntities = firstAttempt.entities;
       finalActionItems = firstAttempt.actionItems;
     } else if (firstAttempt.outcome === "threw") {
+      // TZ 3.4 requirement (a): LangGraph THREW -> RAW_FALLBACK, not a
+      // repair-pass (repair-pass is defined only for requirement (b),
+      // "returned invalid structure"). Sub-step H.2 fix: previously this
+      // branch silently returned without persisting anything.
       usedFallback = true;
       withLogContext({
         trace_id: traceId,
@@ -217,6 +267,8 @@ export async function summarizeAndUpdateMemory(
       finalEntities = rawFallback.entities;
       finalActionItems = rawFallback.actionItems;
     } else {
+      // TZ 3.4 requirement (b): LangGraph returned an INVALID structure
+      // -> exactly one repair-pass attempt before deterministic fallback.
       withLogContext({
         trace_id: traceId,
         chat_id: chatId,
@@ -243,6 +295,8 @@ export async function summarizeAndUpdateMemory(
         finalEntities = repairAttempt.entities;
         finalActionItems = repairAttempt.actionItems;
       } else {
+        // Repair-pass also failed (invalid again OR threw) -> deterministic
+        // fallback serializer, exactly as TZ 3.4(b) specifies.
         usedFallback = true;
         withLogContext({
           trace_id: traceId,
