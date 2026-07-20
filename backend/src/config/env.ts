@@ -35,6 +35,14 @@
  * Sub-step F.2 addition: GITHUB_REPO_OWNER / GITHUB_REPO_NAME identify
  * the target repository for branch creation (githubBranchService.ts).
  * Also optional at introduction time, consumed from F.3 onward.
+ * Sub-step H.3 addition: QUOTA_WINDOW_MS, QUOTA_AGGRESSIVE_THRESHOLD_OPS,
+ * QUOTA_DEFERRED_THRESHOLD_OPS configure services/quotaGovernor.ts, the
+ * per-Cloud-Run-instance write-pressure heuristic that backs TZ 3.4's
+ * "Firestore quota приближается к порогу" behavior (aggressive
+ * summarization, batching, deferred mode). All three ship with defaults
+ * so no operator action is required to deploy this sub-step, but the
+ * defaults are illustrative, not load-tested - see quotaGovernor.ts for
+ * the full per-instance-state limitation disclosure.
  *
  * Sub-step H.1 addition: GCP_PROJECT_ID, RETRY_QUEUE_NAME,
  * RETRY_QUEUE_LOCATION, RETRY_CALLBACK_BASE_URL, RETRY_QUEUE_INVOKER_SA,
@@ -71,6 +79,9 @@ const EnvSchema = z.object({
   RETRY_CALLBACK_BASE_URL: z.string().optional(),
   RETRY_QUEUE_INVOKER_SA: z.string().optional(),
   RETRY_MAX_ATTEMPTS: z.coerce.number().default(5),
+  QUOTA_WINDOW_MS: z.coerce.number().default(60000),
+  QUOTA_AGGRESSIVE_THRESHOLD_OPS: z.coerce.number().default(40),
+  QUOTA_DEFERRED_THRESHOLD_OPS: z.coerce.number().default(80),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
