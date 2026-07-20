@@ -1,11 +1,31 @@
+/**
+ * requireGoogleServiceAuth middleware (Sub-step C.2): verifies
+ * service-to-service OIDC tokens (Cloud Build / Cloud Tasks) against
+ * SERVICE_AUDIENCE and TRUSTED_SERVICE_ACCOUNTS.
+ *
+ * Sub-step H.0 FIX: this file previously read
+ * process.env.SERVICE_AUDIENCE / process.env.TRUSTED_SERVICE_ACCOUNTS
+ * directly, bypassing config/env.ts's loadEnv()/EnvSchema entirely -
+ * every other module that reads these two variables (capture.ts's
+ * dependents, routes/retryTask.ts, routes/push.ts) goes through
+ * loadEnv(), so this file was a silent second source of truth for the
+ * same two env vars, with no shared validation (e.g. EnvSchema's
+ * z.string().optional() coercion). Not a runtime crash on its own, but
+ * a genuine drift risk (Likely-confidence bug: if EnvSchema's validation
+ * for these fields is ever tightened, this file would silently continue
+ * reading the raw, unvalidated process.env value instead of failing the
+ * same way loadEnv() callers do). Fixed by routing both reads through
+ * loadEnv(), matching the rest of the codebase's convention.
+ */
 import { Request, Response, NextFunction } from "express";
 import { OAuth2Client } from "google-auth-library";
 import { withLogContext } from "../logger";
+import { loadEnv } from "../config/env";
 
 const oauthClient = new OAuth2Client();
 
 function getTrustedServiceAccounts(): string[] {
-  const raw = process.env.TRUSTED_SERVICE_ACCOUNTS ?? "";
+  const raw = loadEnv().TRUSTED_SERVICE_ACCOUNTS ?? "";
   return raw
     .split(",")
     .map((s) => s.trim())
@@ -13,7 +33,7 @@ function getTrustedServiceAccounts(): string[] {
 }
 
 function getServiceAudience(): string | undefined {
-  return process.env.SERVICE_AUDIENCE;
+  return loadEnv().SERVICE_AUDIENCE;
 }
 
 declare global {
