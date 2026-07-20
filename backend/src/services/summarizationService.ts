@@ -1,3 +1,20 @@
+/**
+ * Memory summarization service via LangGraph.js (Sub-step E.1, RAW_FALLBACK
+ * added in H.2).
+ *
+ * Sub-step H.0 FIX: this file previously contained literal, unescaped
+ * newline characters embedded inside the ACTION_VERB_RE regex literal and
+ * inside two `.join(" \n ")` string-literal call sites, discovered via
+ * direct inspection of the user-provided ZIP archive (Established
+ * confidence - verified by reading the actual bytes, not inferred). A
+ * literal newline inside an unterminated single-line string/regex literal
+ * is invalid JavaScript/TypeScript syntax and would make `tsc` fail to
+ * compile this file with "Unterminated string literal" / "Unterminated
+ * regular expression literal" errors, blocking the entire backend build.
+ * Fixed by replacing the literal newlines with the escaped sequence \n,
+ * which is both syntactically valid and semantically equivalent to the
+ * original intent (joining history refs with a newline separator).
+ */
 import { StateGraph, END, START, Annotation } from "@langchain/langgraph";
 import { contextCollection } from "../models/collections";
 import { MemoryBlob, CompressionLevel, ChatContextDocument } from "../models/types";
@@ -29,20 +46,17 @@ const StateAnnotation = Annotation.Root({
 
 const CAPITALIZED_WORD_RE = /\b[A-ZА-Я][a-zа-я]{2,}\b/g;
 const ACTION_VERB_RE =
-  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?
-]{0,120}/gi;
+  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?\n]{0,120}/gi;
 
 function extractEntitiesNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join(" 
- ");
+  const joined = state.rawHistoryRefs.join("\n");
   const matches = joined.match(CAPITALIZED_WORD_RE) ?? [];
   const unique = Array.from(new Set(matches)).slice(0, 25);
   return { entities: unique };
 }
 
 function extractActionItemsNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join(" 
- ");
+  const joined = state.rawHistoryRefs.join("\n");
   const matches = joined.match(ACTION_VERB_RE) ?? [];
   const trimmed = matches.map((m) => m.trim()).slice(0, 15);
   return { actionItems: trimmed };

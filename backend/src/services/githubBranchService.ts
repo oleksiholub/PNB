@@ -1,4 +1,15 @@
+/**
+ * GitHub branch provisioning service (Sub-step F.2).
+ *
+ * Sub-step H.0 FIX: buildBranchName() (private, duplicated the
+ * `auto/${sessionId}` formula also inlined in routes/capture.ts) has
+ * been removed from this file and replaced with a shared
+ * buildSessionBranchName() import from utils/branchNaming.ts, so there
+ * is exactly one place that defines the session-branch naming
+ * convention.
+ */
 import { withLogContext } from "../logger";
+import { buildSessionBranchName } from "../utils/branchNaming";
 
 const GITHUB_API_BASE = "https://api.github.com";
 
@@ -17,9 +28,7 @@ export interface EnsureBranchResult {
   created: boolean;
 }
 
-function buildBranchName(sessionId: string): string {
-  return `auto/${sessionId}`;
-}
+
 
 async function getRefSha(
   owner: string,
@@ -51,7 +60,7 @@ export async function ensureSessionBranch(
 ): Promise<EnsureBranchResult> {
   const { owner, repo, sessionId, baseBranch, installationToken, traceId } =
     input;
-  const branchName = buildBranchName(sessionId);
+  const branchName = buildSessionBranchName(sessionId);
 
   const existingHeadSha = await getRefSha(
     owner,

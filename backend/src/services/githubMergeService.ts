@@ -41,8 +41,16 @@
  * perspective, requiring manual Firestore intervention until a later
  * iteration builds that webhook - this gap is disclosed explicitly
  * rather than silently assumed away.
+ *
+ * Sub-step H.0 FIX: mergeSessionBranchIntoDefault() now REQUIRES a
+ * traceId parameter (second positional argument), because its internal
+ * call to getInstallationAccessToken() needs one to attach structured
+ * logs to the correct request trace - this was previously called with
+ * zero arguments, a genuine bug caught by direct signature comparison
+ * against githubAppAuth.ts. Callers (ciCallback.ts) are updated in this
+ * same sub-step to pass req.traceId.
  */
-import { getInstallationAccessToken } from "./githubAppAuth";
+import { getInstallationAccessToken, loadGithubAppCredentialsFromEnv } from "./githubAppAuth";
 import { loadEnv } from "../config/env";
 
 export type MergeOutcome = "MERGED" | "REQUIRES_REVIEW";
@@ -73,6 +81,7 @@ export interface MergeResult {
  */
 export async function mergeSessionBranchIntoDefault(
   sourceBranch: string,
+  traceId: string,
   targetBranch?: string
 ): Promise<MergeResult> {
   const env = loadEnv();
@@ -86,7 +95,31 @@ export async function mergeSessionBranchIntoDefault(
     );
   }
 
-  const token = await getInstallationAccessToken();
+  // Sub-step H.0 FIX: getInstallationAccessToken() requires
+  // (credentials: GithubAppCredentials, traceId: string) per its actual
+  // signature in githubAppAuth.ts - the original call here passed zero
+  // arguments, which would compile under TypeScript's structural typing
+  // only if both parameters were optional (they are not), so this was a
+  // genuine type error caught by direct comparison of the call site
+  // against the callee's real signature (Established confidence). Fixed
+  // by loading credentials via loadGithubAppCredentialsFromEnv() (same
+  // pattern already used in routes/push.ts) and threading a traceId
+  // through mergeSessionBranchIntoDefault() so callers (ciCallback.ts)
+  // can supply the request's actual trace_id instead of a placeholder.
+  const credentials = loadGithubAppCredentialsFromEnv();
+  if (!credentials) {
+    throw new Error(
+      "GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY / GITHUB_APP_INSTALLATION_ID must be set to perform a merge (Sub-step F.1/G.2 dependency)."
+    );
+  }
+
+  const tokenResult = await getInstallationAccessToken(credentials, traceId);
+  if (!tokenResult) {
+    throw new Error(
+      "Failed to obtain a GitHub App installation access token for the merge attempt."
+    );
+  }
+  const token = tokenResult.token;
 
   const response = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/merges`,
