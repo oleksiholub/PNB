@@ -1,72 +1,57 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step H.1.
+репозитория после завершения Sub-step H.0 (исправление ошибок,
+найденных при аудите пользовательского ZIP-архива) и предшествующего
+ему H.1 (Cloud Tasks retry queue).
 
 ## Статус
 
-- ✅ Итерация A завершена (A.1–A.3)
-- ✅ Итерация B завершена (B.1–B.3)
-- ✅ Итерация C завершена (C.1–C.2)
-- ✅ Итерация D завершена целиком (D.1–D.5)
-- ✅ Итерация E завершена целиком (E.1–E.3)
-- ✅ Итерация F завершена целиком (F.1–F.4)
-- ✅ Итерация G завершена целиком (G.1–G.2)
-- 🔶 Итерация H в процессе:
-  - **H.1 — Cloud Tasks retry queue infrastructure**: `retryQueueService.ts`
-    (`enqueueRetryTask`), `POST /retry-task/:operation`
-    (`routes/retryTask.ts`) reading `X-CloudTasks-TaskRetryCount`,
-    exhaustion → `dead_letter` write; queue itself provisioned via
-    `infra/create_retry_queue.sh` (exponential backoff at queue level).
-    **Explicit gap**: business-logic dispatch и wiring существующих
-    точек сбоя на `enqueueRetryTask` — раскрытый follow-up.
-  - H.2 — `RAW_FALLBACK`, repair-pass, deterministic serializer + закрытие
-    пробела H.1 (подключение `OPERATION_HANDLERS`) — впереди
-  - H.3 — адаптивная суммаризация/батчинг при приближении к лимитам Firestore — впереди
+- ✅ Итерации A–G завершены (подтверждено прямым чтением архива, предоставленного пользователем)
+- ✅ **H.0 (новый, аудит и исправление ошибок)** — 6 ошибок найдено при глубоком построчном чтении архива, все 6 исправлены в этом подшаге
+- ✅ H.1 — Cloud Tasks retry queue infrastructure (без изменений, ошибок не найдено)
+- ⏳ H.2 — RAW_FALLBACK/repair-pass — уже частично присутствовал в архиве как `buildDeterministicFallback()` внутри `summarizationService.ts`, требует отдельной ревизии в следующем подшаге
+- ⏳ H.3 — адаптивная суммаризация/батчинг — впереди
 
-## ⚠️ Открытые компромиссы, требующие внимания
+## Аудит и исправления Sub-step H.0
+
+Пользователь предоставил ZIP-архив с полным кодом проекта. Проведён построчный анализ всех 69 файлов. Найдено 6 расхождений, классифицированных по уровню достоверности (Established = подтверждено прямым чтением байтов, Likely = вероятная, но не гарантированно ломающая проблема):
+
+| # | Файл(ы) | Confidence | Что было не так | Как исправлено |
+|---|---|---|---|---|
+| 1 | `services/summarizationService.ts` | **Established** | Буквальный (не экранированный) разрыв строки внутри regex-литерала `ACTION_VERB_RE` и двух вызовов `.join(" \n ")` — невалидный TS-синтаксис, `tsc` не скомпилировал бы файл | Заменено на экранированную последовательность `\n` |
+| 2 | `services/githubMergeService.ts` + `routes/ciCallback.ts` | **Established** | `getInstallationAccessToken()` вызывался без аргументов, хотя сигнатура требует `(credentials, traceId)`; `mergeSessionBranchIntoDefault()` не принимал `traceId` вовсе | Добавлен обязательный параметр `traceId` в `mergeSessionBranchIntoDefault()`, вызов `getInstallationAccessToken()` теперь получает реальные credentials через `loadGithubAppCredentialsFromEnv()`; `ciCallback.ts` передаёт `traceId` |
+| 3 | `models/collections.ts` + `routes/selectorConfig.ts` | **Established** | Selector-config писался/читался по ДВУМ несогласованным путям Firestore одновременно (`selector_configs/{version}` и `configs/selectors/versions/current`), третий путь в `collections.ts` не использовался вовсе | Добавлена `currentSelectorConfigDoc()` в `collections.ts`; `selectorConfig.ts` переписан на единый источник истины через `models/collections.ts` |
+| 4 | `middleware/serviceAuth.ts` | Likely | Читал `process.env` напрямую, минуя `loadEnv()`/`EnvSchema`, в отличие от всего остального кода | Переведён на `loadEnv()` |
+| 5 | `services/githubBranchService.ts` + `routes/capture.ts` | Likely | Формула `auto/${sessionId}` дублировалась в двух файлах без общего источника | Вынесена в новый `utils/branchNaming.ts` (`buildSessionBranchName()`) |
+| 6 | `routes/capture.ts` | Likely (оптимизация) | Лишний `await docRef.get()` для получения `refCount`, который уже был известен локально | Заменено на локальную переменную `refCountLocal` |
+
+**Не найдено ошибок** (проверено детально, оставлено без изменений): `routes/handoff.ts`, `schemas/handoff.ts`, `routes/context.ts`, `routes/retryTask.ts`, `services/retryQueueService.ts`, `routes/push.ts` (дедупликация по `push_status`+`target_branch` работает корректно), `config/env.ts`, `config/region.ts`, `config/firestore.ts`, `utils/hash.ts`, `utils/ids.ts`, `models/types.ts`.
+
+## ⚠️ Открытые компромиссы (перенесены из предыдущей документации, актуальность подтверждена по архиву)
 
 1. Security TODO (D.5): временное хранение email/password в `chrome.storage.local`.
 2. Interim summarizer (E.1): экстрактивные heuristics вместо LLM.
-3. Request shape для `POST /handoff` (E.2) не специфицирован в ТЗ.
-4. Client-side encryption contract для `GET /context/:chatId` (E.3) не специфицирован в ТЗ.
-5. Token caching policy для GitHub App (F.1) не специфицирована в ТЗ.
-6. Target repository coordinates и default branch (F.2) не специфицированы в ТЗ.
-7. Exact commit-log schema (F.3) не специфицирована в ТЗ.
-8. `handoff_trigger_markers` enforcement scope (F.4) не специфицирован полностью в ТЗ.
-9. CI-result-to-artifact correlation granularity (G.1) не специфицирована в ТЗ.
-10. `REPOSITORY_CONNECTION`/`BACKEND_SERVICE_URL` остаются `REPLACE_ME_*` (G.1).
-11. `REQUIRES_REVIEW` — терминальный статус без auto-recovery (G.2).
-12. Без `@octokit/rest`, используется native `fetch()` (G.2).
-13. **Business-logic retry dispatch не подключён (H.1)** — `OPERATION_HANDLERS` пуст; любая задача получает `501 operation_not_wired`, а не реальный повтор. Явно раскрытый пробел, требующий follow-up.
-14. **Независимые конфигурации max-attempts (H.1)**: `RETRY_MAX_ATTEMPTS` (env) и `--max-attempts` (Cloud Tasks queue) не синхронизируются автоматически.
-15. **Иллюстративные значения backoff (H.1)**: `min-backoff=1s`, `max-backoff=600s`, `max-doublings=5`, `max-attempts=5` — не мандат ТЗ, подлежат тюнингу по данным Итерации I.
-
-## Итог по браузерному риску (D.1–D.2)
-
-Критический риск Kiwi Browser снят архитектурно. Уточнённый риск: Helium
-несовместим с MV3. **Lemur Browser** рекомендован для bootstrap.
+3. Client-side encryption contract для `GET /context/:chatId` (E.3) — плейсхолдер `unspecified-placeholder` алгоритм, не финализирован.
+4. Token caching policy для GitHub App (F.1) не специфицирована — токен запрашивается заново на каждый вызов, не кэшируется.
+5. `handoff_trigger_markers` enforcement scope (F.4) не специфицирован полностью.
+6. `REQUIRES_REVIEW` (G.2) — терминальный статус без auto-recovery webhook.
+7. Business-logic retry dispatch (`OPERATION_HANDLERS`) в `routes/retryTask.ts` пуст (H.1) — явный, задокументированный пробел.
+8. Иллюстративные значения backoff (H.1) в `infra/create_retry_queue.sh`, требуют тюнинга.
+9. **RAW_FALLBACK (H.2)** уже частично реализован через `buildDeterministicFallback()` в `summarizationService.ts`, но требует отдельной ревизии на предмет полноты relative к TZ 3.4/4 в следующем подшаге.
 
 ## Структура проекта
 
-- `backend/src/services/retryQueueService.ts` — `enqueueRetryTask()` (H.1)
-- `backend/src/routes/retryTask.ts` — `POST /retry-task/:operation`, `OPERATION_HANDLERS` пуст (H.1)
-- `infra/create_retry_queue.sh` — provisions `pnb-retry-queue` (H.1)
-- `backend/src/config/env.ts` — retry-queue env vars (H.1)
-- `backend/package.json` — `@google-cloud/tasks` dependency (H.1)
-- `backend/src/index.ts` — mounts `/retry-task/:operation` (H.1)
-- `backend/src/types/logging.ts` — `retry_task` operation type (H.1)
-- `backend/src/services/githubMergeService.ts` — merge-on-green-CI (G.2)
-- `backend/src/routes/ciCallback.ts` — CI reporting + merge dispatch (G.1/G.2)
-- `cloudbuild.yaml`, `infra/create_cloud_build_trigger.sh` (G.1)
-- `backend/src/routes/selectorConfig.ts` (D.3/F.4)
-- `backend/src/routes/push.ts` (F.3)
-- `backend/src/services/githubBranchService.ts`, `githubAppAuth.ts` (F.1/F.2)
-- `backend/src/routes/context.ts` (E.3)
-- `backend/src/routes/handoff.ts` (E.2)
-- `backend/src/services/summarizationService.ts` (E.1)
-- `extension/src/*` (D.1-D.5)
-- `firestore.rules`, `firebase.json`, `firestore.indexes.json`, и др. базовые файлы (A–C)
+- `backend/src/utils/branchNaming.ts` — **новый (H.0)**: единая формула `auto/${sessionId}`, устраняет дублирование
+- `backend/src/services/summarizationService.ts` — **исправлен (H.0)**: устранён невалидный синтаксис regex/join
+- `backend/src/services/githubMergeService.ts` — **исправлен (H.0)**: добавлен обязательный `traceId`, корректный вызов `getInstallationAccessToken`
+- `backend/src/routes/ciCallback.ts` — **исправлен (H.0)**: передаёт `traceId` в `mergeSessionBranchIntoDefault`
+- `backend/src/models/collections.ts` — **исправлен (H.0)**: добавлена `currentSelectorConfigDoc()`
+- `backend/src/routes/selectorConfig.ts` — **переписан (H.0)**: единый источник истины Firestore
+- `backend/src/middleware/serviceAuth.ts` — **исправлен (H.0)**: использует `loadEnv()`
+- `backend/src/routes/capture.ts` — **исправлен (H.0)**: убран лишний Firestore round-trip, использует `buildSessionBranchName()`
+- `backend/src/services/githubBranchService.ts` — **исправлен (H.0)**: использует общую `buildSessionBranchName()`
+- Остальные файлы — без изменений в этом подшаге, соответствуют состоянию из предоставленного архива
 
 ## Дерево файлов и папок PNB
 
@@ -116,6 +101,7 @@ PNB/
 │   │   ├── types/
 │   │   │   └── logging.ts
 │   │   └── utils/
+│   │       ├── branchNaming.ts
 │   │       ├── hash.ts
 │   │       └── ids.ts
 │   └── tsconfig.json
@@ -124,8 +110,6 @@ PNB/
 │   └── architecture-notes.md
 ├── extension/
 │   ├── README_extension.md
-│   ├── icons/
-│   │   └── .gitkeep
 │   ├── manifest.json
 │   └── src/
 │       ├── auth_manager.js
@@ -143,3 +127,4 @@ PNB/
 └── infra/
     ├── create_cloud_build_trigger.sh
     └── create_retry_queue.sh
+```
