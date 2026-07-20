@@ -1,8 +1,33 @@
+/**
+ * GET /selector-config/current and POST /selector-config/refresh
+ * (Sub-step F.4).
+ *
+ * Sub-step H.0 FIX: this route previously called getFirestoreDb()
+ * directly and wrote/read TWO uncoordinated Firestore paths for the same
+ * logical "current published config" concept -
+ * db.collection("selector_configs").doc(payload.version) (a per-version
+ * archive doc, fine on its own) AND
+ * db.collection("configs").doc("selectors").collection("versions").doc("current")
+ * (a completely separate nested-subcollection path) - while
+ * models/collections.ts's selectorConfigsCollection() pointed at yet a
+ * THIRD, never-actually-read path ("selector_configs" as a flat
+ * collection queried by auto-ID, not by version). GET
+ * /selector-config/current read from the second path, so a caller
+ * reading via selectorConfigsCollection() would see nothing. This is a
+ * genuine data-consistency bug, not a stylistic one - fixed by routing
+ * both the archive write and the "current" pointer through
+ * models/collections.ts's currentSelectorConfigDoc() (new in this
+ * sub-step) and selectorConfigsCollection().doc(version) exclusively, so
+ * there is exactly one place ("current" pointer doc) any reader needs to
+ * query, and exactly one archive collection any version lookup needs to
+ * query - no other module computes its own Firestore path for selector
+ * config anymore.
+ */
 import { Router, Request, Response } from "express";
 import { ZodError } from "zod";
-import { getFirestoreDb } from "../config/firestore";
 import { withLogContext } from "../logger";
 import { SelectorConfigPayloadSchema } from "../schemas/selectorConfig";
+import { selectorConfigsCollection, currentSelectorConfigDoc } from "../models/collections";
 
 export const selectorConfigRouter = Router();
 
@@ -10,9 +35,7 @@ selectorConfigRouter.get("/selector-config/current", async (req: Request, res: R
   const traceId = req.traceId;
 
   try {
-    const db = getFirestoreDb();
-    const docRef = db.collection("configs").doc("selectors").collection("versions").doc("current");
-    const snapshot = await docRef.get();
+    const snapshot = await currentSelectorConfigDoc().get();
 
     if (!snapshot.exists) {
       withLogContext({
@@ -77,26 +100,17 @@ selectorConfigRouter.post("/selector-config/refresh", async (req: Request, res: 
   }
 
   try {
-    const db = getFirestoreDb();
     const publishedAt = new Date().toISOString();
-    const versionDocRef = db.collection("selector_configs").doc(payload.version);
-    const currentDocRef = db
-      .collection("configs")
-      .doc("selectors")
-      .collection("versions")
-      .doc("current");
-
-    const batch = db.batch();
-    batch.set(versionDocRef, {
+    const archiveDoc = {
       version: payload.version,
       payload,
       published_at: publishedAt,
-    });
-    batch.set(currentDocRef, {
-      ...payload,
-      published_at: publishedAt,
-    });
-    await batch.commit();
+    };
+
+    await Promise.all([
+      selectorConfigsCollection().doc(payload.version).set(archiveDoc),
+      currentSelectorConfigDoc().set(archiveDoc),
+    ]);
 
     withLogContext({
       trace_id: traceId,

@@ -41,6 +41,12 @@
  * branch name. All PUSHED_NO_CI artifacts on that branch receive the
  * SAME merge outcome (MERGED or REQUIRES_REVIEW), since they share one
  * underlying Git branch and therefore one actual merge attempt.
+ *
+ * Sub-step H.0 FIX: the call to mergeSessionBranchIntoDefault() below now
+ * passes traceId as its second argument, matching the corrected signature
+ * in githubMergeService.ts (see that file's own H.0 fix note) - the
+ * previous single-argument call was a genuine bug that would not have
+ * compiled once the callee required traceId.
  */
 import { Request, Response } from "express";
 import { ZodError } from "zod";
@@ -140,7 +146,11 @@ export async function handleCiCallback(req: Request, res: Response): Promise<voi
     }
 
     // ci_status === "SUCCESS": attempt merge-on-green-CI (Sub-step G.2)
-    const mergeResult = await mergeSessionBranchIntoDefault(branch_name);
+    // Sub-step H.0 FIX: mergeSessionBranchIntoDefault() now requires a
+    // traceId parameter (see githubMergeService.ts's H.0 header) - the
+    // original call site omitted it entirely, which would have failed
+    // TypeScript compilation once the callee's signature was corrected.
+    const mergeResult = await mergeSessionBranchIntoDefault(branch_name, traceId);
     const newPushStatus = mergeResult.outcome; // "MERGED" | "REQUIRES_REVIEW"
 
     const batch = collection.firestore.batch();

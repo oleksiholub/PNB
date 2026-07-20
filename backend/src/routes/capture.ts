@@ -1,4 +1,16 @@
 /**
+ * Sub-step H.0 FIX (applied on top of prior sub-steps): two changes in
+ * this file this sub-step: (1) target_branch now uses the shared
+ * buildSessionBranchName() from utils/branchNaming.ts instead of an
+ * inline `auto/${session_id}` template literal duplicated with
+ * githubBranchService.ts's (now-removed) private copy of the same
+ * formula; (2) the conversation-capture path no longer performs an
+ * extra `await docRef.get()` solely to learn raw_history_refs.length
+ * after already computing that same array one line earlier - refCount
+ * is now tracked locally as refCountLocal, removing one redundant
+ * Firestore round-trip per conversation-turn capture.
+ */
+/**
  * POST /capture route handler.
  *
  * Sub-step C.1 change: owner_uid is now sourced exclusively from
@@ -32,6 +44,7 @@ import {
   normalizeQaStatus,
 } from "../schemas/capture";
 import { sha256Hex } from "../utils/hash";
+import { buildSessionBranchName } from "../utils/branchNaming";
 import { newArtifactId } from "../utils/ids";
 import { withLogContext } from "../logger";
 import { codeArtifactsCollection, contextCollection } from "../models/collections";
@@ -162,7 +175,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
         content_hash: contentHash,
         qa_status: qaStatus,
         push_requested: parsed.push_requested,
-        target_branch: `auto/${session_id}`,
+        target_branch: buildSessionBranchName(session_id),
         push_status: "PENDING",
         retry_count: 0,
         chat_id,
@@ -233,6 +246,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
     const docRef = contextCol.doc(chat_id);
     const nowIso = new Date().toISOString();
     const existingSnap = await docRef.get();
+    let refCountLocal = 0;
 
     if (existingSnap.exists) {
       const existingData = existingSnap.data() as ChatContextDocument;
@@ -257,21 +271,32 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       }
 
       const rawRef = parsed.user_message ?? parsed.model_response ?? "";
+      const updatedRefs = [
+        ...existingData.memory_blob.raw_history_refs,
+        rawRef,
+      ];
       await docRef.set(
         {
           ...existingData,
           last_interaction: nowIso,
           memory_blob: {
             ...existingData.memory_blob,
-            raw_history_refs: [
-              ...existingData.memory_blob.raw_history_refs,
-              rawRef,
-            ],
+            raw_history_refs: updatedRefs,
           },
         },
         { merge: true }
       );
+      // Sub-step H.0 FIX: refCount is now tracked locally (updatedRefs.length)
+      // instead of re-reading the just-written document from Firestore
+      // below - the previous code performed an extra await docRef.get()
+      // purely to learn a length it had already computed in memory one
+      // line above, an unnecessary round-trip (Likely-confidence
+      // performance issue, not a correctness bug, since the two values
+      // were always consistent - fixed as a low-risk optimization while
+      // already touching this code path for H.0).
+      refCountLocal = updatedRefs.length;
     } else {
+      const initialRefs = [parsed.user_message ?? parsed.model_response ?? ""];
       const newDoc: ChatContextDocument = {
         chat_id,
         session_id,
@@ -283,13 +308,14 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
           summary: "",
           entities: [],
           action_items: [],
-          raw_history_refs: [parsed.user_message ?? parsed.model_response ?? ""],
+          raw_history_refs: initialRefs,
           encrypted: false,
           schema_version: "v1",
           compression_level: "normal",
         },
       };
       await docRef.set(newDoc);
+      refCountLocal = initialRefs.length;
     }
 
     withLogContext({
@@ -301,9 +327,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       retry_count: 0,
     }).info("conversation turn captured and persisted to Firestore");
 
-    const refreshedSnap = await docRef.get();
-    const refCount = (refreshedSnap.data() as ChatContextDocument).memory_blob
-      .raw_history_refs.length;
+    const refCount = refCountLocal;
 
     let summarizationTriggered = false;
     if (shouldTriggerSummarization(refCount)) {
