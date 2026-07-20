@@ -1,3 +1,10 @@
+/**
+ * TypeScript mirrors of the Data Model defined in TZ section 4.
+ * These interfaces are intentionally kept close to the JSON shape in the
+ * TZ so that Firestore documents can be diffed against the spec directly.
+ * schema_version is fixed to "v1" per TZ section 4 (memory_blob.schema_version).
+ */
+
 export type CompressionLevel = "normal" | "aggressive" | "emergency";
 
 export interface MemoryBlob {
@@ -35,6 +42,12 @@ export interface CodeArtifactDocument {
   session_id: string;
   owner_uid: string;
   created_at: string;
+  // Sub-step G.1 additions: populated by POST /ci-callback once Cloud
+  // Build reports a result for this artifact's target_branch. Optional
+  // because they do not exist prior to any CI run (push_status still
+  // PENDING/REJECTED_BY_QA_GATE/PUSHED_NO_CI).
+  ci_build_id?: string;
+  ci_commit_sha?: string;
 }
 
 export interface ChatContextDocument {
