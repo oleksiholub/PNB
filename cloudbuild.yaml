@@ -1,0 +1,82 @@
+# PNB Cloud Build pipeline (Sub-step G.1).
+#
+# TZ section 3.2: "CI-логика (Cloud Build) запускается на push в auto/*
+# и должна прогонять unit tests перед merge в main." Section 5 bootstrap
+# step 10: "Настроен Cloud Build trigger и merge automation policy."
+#
+# SCOPE FOR G.1: this pipeline installs dependencies, builds the
+# TypeScript backend, and runs its unit test suite, then reports the
+# outcome (SUCCESS or FAILURE) back to the PNB backend via the new
+# POST /ci-callback route (backend/src/routes/ciCallback.ts) so Firestore
+# push_status can reflect the CI result (PUSHED_NO_CI -> PUSHED on
+# success, CI_FAILED on failure). Acting further on that result - i.e.
+# auto-merging to main on green CI, or flagging REQUIRES_REVIEW on
+# conflict - is explicitly OUT OF SCOPE here; that is Sub-step G.2,
+# consistent with the binding plan's separation of "run CI and report
+# result" (G.1) from "act on CI result via merge automation" (G.2).
+#
+# FAILURE-PATH CORRECTNESS: build/test failures must still be reported to
+# the backend (not silently dropped when Cloud Build aborts the
+# pipeline), so build/test execution and result reporting are combined
+# into a single step with explicit exit-code capture, rather than relying
+# on Cloud Build's default "stop on first failing step" behavior, which
+# would otherwise skip the callback entirely on a failing build and leave
+# the artifact stuck at PUSHED_NO_CI forever.
+#
+# CONTRACT AMBIGUITY DISCLOSURE: the TZ names Cloud Build's trigger
+# condition (push to auto/*) and its consequence (gate before merge) but
+# does not specify HOW a build run is correlated back to a specific
+# code_artifact document, since a single auto/<session_id> branch may
+# have received more than one pushed artifact before a build runs. This
+# pipeline resolves that gap by having the callback step update ALL
+# code_artifacts whose target_branch matches the branch under build AND
+# whose push_status is currently PUSHED_NO_CI - i.e. CI status is applied
+# per-branch, not resolved to a single artifact_id, since Cloud Build's
+# own trigger event carries a branch name, not a PNB artifact_id.
+#
+# AUTH NOTE: the reporting step authenticates to the backend using a
+# Google-signed OIDC identity token for the Cloud Build service account,
+# verified by requireGoogleServiceAuth (Sub-step C.2) - this is the first
+# consumer of that middleware, which was deliberately forward-provisioned
+# in C.2 ahead of any internal caller existing yet.
+
+steps:
+  - id: install-deps
+    name: "node:20-slim"
+    entrypoint: npm
+    args: ["ci"]
+    dir: "backend"
+
+  - id: build-and-test-and-report
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+    entrypoint: bash
+    dir: "backend"
+    args:
+      - "-c"
+      - |
+        set +e
+        npm run build && npm test
+        BUILD_EXIT_CODE=$?
+        set -e
+
+        if [ "$BUILD_EXIT_CODE" -eq 0 ]; then
+          CI_STATUS="SUCCESS"
+        else
+          CI_STATUS="FAILURE"
+        fi
+
+        TOKEN=$(gcloud auth print-identity-token --audiences="${_BACKEND_SERVICE_URL}")
+        curl -sf -X POST "${_BACKEND_SERVICE_URL}/ci-callback" \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{"branch_name": "${BRANCH_NAME}", "build_id": "${BUILD_ID}", "commit_sha": "${COMMIT_SHA}", "ci_status": "$CI_STATUS"}"
+
+        exit $BUILD_EXIT_CODE
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _BACKEND_SERVICE_URL: "https://REPLACE_ME_CLOUD_RUN_SERVICE_URL"
+
+timeout: "1200s"
