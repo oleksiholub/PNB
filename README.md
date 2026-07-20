@@ -1,57 +1,54 @@
 # PNB (Perplexity Neural Bridge)
 
-Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step H.0 (исправление ошибок,
-найденных при аудите пользовательского ZIP-архива) и предшествующего
-ему H.1 (Cloud Tasks retry queue).
+Реализация системы автоматизации кросс-чатного контекста и хендоффа для Perplexity Pro по техническому заданию `tz-handoff_v4.md`. Данный README отражает состояние репозитория после завершения подшагов H.0 (аудит и исправление ошибок), H.1 (Cloud Tasks retry queue), H.2 (repair-pass и RAW_FALLBACK) и **H.3 (адаптивная суммаризация/батчинг при приближении к квотам Firestore)**.
 
 ## Статус
 
-- ✅ Итерации A–G завершены (подтверждено прямым чтением архива, предоставленного пользователем)
-- ✅ **H.0 (новый, аудит и исправление ошибок)** — 6 ошибок найдено при глубоком построчном чтении архива, все 6 исправлены в этом подшаге
-- ✅ H.1 — Cloud Tasks retry queue infrastructure (без изменений, ошибок не найдено)
-- ⏳ H.2 — RAW_FALLBACK/repair-pass — уже частично присутствовал в архиве как `buildDeterministicFallback()` внутри `summarizationService.ts`, требует отдельной ревизии в следующем подшаге
-- ⏳ H.3 — адаптивная суммаризация/батчинг — впереди
+- ✅ Итерации A–G завершены
+- ✅ H.0 — 6 ошибок найдено и исправлено при аудите архива
+- ✅ H.1 — Cloud Tasks retry queue infrastructure
+- ✅ H.2 — полный TZ 3.4 error-handling contract для summarization pipeline (repair-pass + RAW_FALLBACK-on-exception)
+- ✅ **H.3 (новый) — адаптивная суммаризация, батчинг conversation-событий и deferred mode при приближении к квотам Firestore**
+- ⏳ H.4 — интеграция `QuotaGovernor.recordWrite()` в остальные Firestore-пишущие пути (`push.ts`, `retryTask.ts`, `ciCallback.ts`) для более полной картины нагрузки — впереди
 
-## Аудит и исправления Sub-step H.0
+## Sub-step H.3: реализация TZ 3.4 (квоты Firestore)
 
-Пользователь предоставил ZIP-архив с полным кодом проекта. Проведён построчный анализ всех 69 файлов. Найдено 6 расхождений, классифицированных по уровню достоверности (Established = подтверждено прямым чтением байтов, Likely = вероятная, но не гарантированно ломающая проблема):
+ТЗ 3.4 требует: при приближении квот Firestore к порогу — включать более агрессивную суммаризацию, сокращать частоту фоновых обновлений, объединять capture-события в батч, а при жёстком пороге — переводить не-критичные операции в deferred mode.
 
-| # | Файл(ы) | Confidence | Что было не так | Как исправлено |
-|---|---|---|---|---|
-| 1 | `services/summarizationService.ts` | **Established** | Буквальный (не экранированный) разрыв строки внутри regex-литерала `ACTION_VERB_RE` и двух вызовов `.join(" \n ")` — невалидный TS-синтаксис, `tsc` не скомпилировал бы файл | Заменено на экранированную последовательность `\n` |
-| 2 | `services/githubMergeService.ts` + `routes/ciCallback.ts` | **Established** | `getInstallationAccessToken()` вызывался без аргументов, хотя сигнатура требует `(credentials, traceId)`; `mergeSessionBranchIntoDefault()` не принимал `traceId` вовсе | Добавлен обязательный параметр `traceId` в `mergeSessionBranchIntoDefault()`, вызов `getInstallationAccessToken()` теперь получает реальные credentials через `loadGithubAppCredentialsFromEnv()`; `ciCallback.ts` передаёт `traceId` |
-| 3 | `models/collections.ts` + `routes/selectorConfig.ts` | **Established** | Selector-config писался/читался по ДВУМ несогласованным путям Firestore одновременно (`selector_configs/{version}` и `configs/selectors/versions/current`), третий путь в `collections.ts` не использовался вовсе | Добавлена `currentSelectorConfigDoc()` в `collections.ts`; `selectorConfig.ts` переписан на единый источник истины через `models/collections.ts` |
-| 4 | `middleware/serviceAuth.ts` | Likely | Читал `process.env` напрямую, минуя `loadEnv()`/`EnvSchema`, в отличие от всего остального кода | Переведён на `loadEnv()` |
-| 5 | `services/githubBranchService.ts` + `routes/capture.ts` | Likely | Формула `auto/${sessionId}` дублировалась в двух файлах без общего источника | Вынесена в новый `utils/branchNaming.ts` (`buildSessionBranchName()`) |
-| 6 | `routes/capture.ts` | Likely (оптимизация) | Лишний `await docRef.get()` для получения `refCount`, который уже был известен локально | Заменено на локальную переменную `refCountLocal` |
+### Архитектурное честное ограничение (раскрыто явно, не скрыто)
 
-**Не найдено ошибок** (проверено детально, оставлено без изменений): `routes/handoff.ts`, `schemas/handoff.ts`, `routes/context.ts`, `routes/retryTask.ts`, `services/retryQueueService.ts`, `routes/push.ts` (дедупликация по `push_status`+`target_branch` работает корректно), `config/env.ts`, `config/region.ts`, `config/firestore.ts`, `utils/hash.ts`, `utils/ids.ts`, `models/types.ts`.
+`QuotaGovernor` — это **per-instance** (на один экземпляр Cloud Run) скользящее окно недавних Firestore-записей в памяти процесса, а НЕ авторитетный проектный учёт реального потребления квот. Поскольку backend по ТЗ 3.2 обязан быть stateless/scale-to-zero, несколько параллельных инстансов ведут независимые несогласованные счётчики, а инстанс, ушедший в ноль, теряет счётчик полностью. Полностью корректная реализация требовала бы чтения реальных данных через Cloud Monitoring Metrics API — это явно вне рамок текущего подшага и зафиксировано как открытый компромисс ниже.
 
-## ⚠️ Открытые компромиссы (перенесены из предыдущей документации, актуальность подтверждена по архиву)
+### Что реализовано
+
+- **`quotaGovernor.ts`** (новый) — скользящее окно записей, три режима: `normal` / `aggressive` / `deferred`, пороги настраиваются через `QUOTA_WINDOW_MS`, `QUOTA_AGGRESSIVE_THRESHOLD_OPS`, `QUOTA_DEFERRED_THRESHOLD_OPS`.
+- **`captureBatchBuffer.ts`** (новый) — буферизация conversation-событий и батчевый `batch().commit()` в Firestore; **код-артефакты исключены из батчинга** как критичные для push-пайплайна (обоснование дано ТЗ формулировкой "не-критичные операции").
+- **`summarizationService.ts`** — `pickCompressionLevel()` теперь принимает `QuotaMode` и устанавливает пол уровня сжатия (`aggressive`-режим → минимум `aggressive`; `deferred`-режим → минимум `emergency`), не занижая уровень, уже требуемый по `refCount`.
+- **`capture.ts`** — при `aggressive`/`deferred` режиме conversation-запись уходит в буфер вместо немедленной записи; частота фоновой суммаризации адаптивно снижается (`aggressive` — вдвое реже, `deferred` — пропуск на этот ход); ответ API честно сообщает `persisted`/`batched`/`quota_mode`.
+- **`env.ts`** — добавлены три переменные окружения с безопасными дефолтами, деплой не требует ручных действий оператора.
+
+## ⚠️ Открытые компромиссы
 
 1. Security TODO (D.5): временное хранение email/password в `chrome.storage.local`.
-2. Interim summarizer (E.1): экстрактивные heuristics вместо LLM.
-3. Client-side encryption contract для `GET /context/:chatId` (E.3) — плейсхолдер `unspecified-placeholder` алгоритм, не финализирован.
-4. Token caching policy для GitHub App (F.1) не специфицирована — токен запрашивается заново на каждый вызов, не кэшируется.
-5. `handoff_trigger_markers` enforcement scope (F.4) не специфицирован полностью.
-6. `REQUIRES_REVIEW` (G.2) — терминальный статус без auto-recovery webhook.
-7. Business-logic retry dispatch (`OPERATION_HANDLERS`) в `routes/retryTask.ts` пуст (H.1) — явный, задокументированный пробел.
-8. Иллюстративные значения backoff (H.1) в `infra/create_retry_queue.sh`, требуют тюнинга.
-9. **RAW_FALLBACK (H.2)** уже частично реализован через `buildDeterministicFallback()` в `summarizationService.ts`, но требует отдельной ревизии на предмет полноты relative к TZ 3.4/4 в следующем подшаге.
+2. Client-side encryption contract для `GET /context/:chatId` (E.3) — плейсхолдер `unspecified-placeholder`.
+3. Token caching policy для GitHub App (F.1) не специфицирована.
+4. `handoff_trigger_markers` enforcement scope (F.4) не специфицирован полностью.
+5. `REQUIRES_REVIEW` (G.2) — терминальный статус без auto-recovery webhook.
+6. `OPERATION_HANDLERS` в `routes/retryTask.ts` пуст (H.1).
+7. Иллюстративные значения backoff (H.1) требуют тюнинга.
+8. Repair-pass (H.2) — простой немедленный повтор графа, не отдельная трансформация.
+9. **QuotaGovernor (H.3) — per-instance, а не project-wide учёт** (см. раскрытие ограничения выше); пороги (`QUOTA_*_THRESHOLD_OPS`) иллюстративные, не подтверждены нагрузочным тестированием.
+10. **Батчинг (H.3) — trade-off консистентности**: буферизованная запись невидима для `GET /context/:chatId` до флуша; повторный capture для того же `chat_id` внутри окна батча перезатирает буферизованную запись (last-write-wins), а не добавляется к ней.
+11. `QuotaGovernor.recordWrite()` вызывается только из conversation-пути `capture.ts` — остальные Firestore-пишущие пути (`push.ts`, `retryTask.ts`, `ciCallback.ts`) пока не инкрементируют счётчик, поэтому реальная картина нагрузки от push/CI/retry-операций сейчас не учитывается governor'ом.
 
 ## Структура проекта
 
-- `backend/src/utils/branchNaming.ts` — **новый (H.0)**: единая формула `auto/${sessionId}`, устраняет дублирование
-- `backend/src/services/summarizationService.ts` — **исправлен (H.0)**: устранён невалидный синтаксис regex/join
-- `backend/src/services/githubMergeService.ts` — **исправлен (H.0)**: добавлен обязательный `traceId`, корректный вызов `getInstallationAccessToken`
-- `backend/src/routes/ciCallback.ts` — **исправлен (H.0)**: передаёт `traceId` в `mergeSessionBranchIntoDefault`
-- `backend/src/models/collections.ts` — **исправлен (H.0)**: добавлена `currentSelectorConfigDoc()`
-- `backend/src/routes/selectorConfig.ts` — **переписан (H.0)**: единый источник истины Firestore
-- `backend/src/middleware/serviceAuth.ts` — **исправлен (H.0)**: использует `loadEnv()`
-- `backend/src/routes/capture.ts` — **исправлен (H.0)**: убран лишний Firestore round-trip, использует `buildSessionBranchName()`
-- `backend/src/services/githubBranchService.ts` — **исправлен (H.0)**: использует общую `buildSessionBranchName()`
-- Остальные файлы — без изменений в этом подшаге, соответствуют состоянию из предоставленного архива
+- `backend/src/services/quotaGovernor.ts` — **новый (H.3)**: per-instance heuristic Firestore write-pressure tracker
+- `backend/src/services/captureBatchBuffer.ts` — **новый (H.3)**: буферизация и батчевый flush conversation-событий
+- `backend/src/config/env.ts` — **изменён (H.3)**: добавлены `QUOTA_WINDOW_MS`, `QUOTA_AGGRESSIVE_THRESHOLD_OPS`, `QUOTA_DEFERRED_THRESHOLD_OPS`
+- `backend/src/services/summarizationService.ts` — **изменён (H.3)**: `pickCompressionLevel()` учитывает `QuotaMode`
+- `backend/src/routes/capture.ts` — **изменён (H.3)**: интеграция governor + batch buffer + адаптивная частота суммаризации
+- Остальные файлы — без изменений в этом подшаге, соответствуют состоянию после H.0/H.1/H.2
 
 ## Дерево файлов и папок PNB
 
@@ -92,10 +89,12 @@ PNB/
 │   │   │   ├── handoff.ts
 │   │   │   └── selectorConfig.ts
 │   │   ├── services/
+│   │   │   ├── captureBatchBuffer.ts
 │   │   │   ├── deadLetterService.ts
 │   │   │   ├── githubAppAuth.ts
 │   │   │   ├── githubBranchService.ts
 │   │   │   ├── githubMergeService.ts
+│   │   │   ├── quotaGovernor.ts
 │   │   │   ├── retryQueueService.ts
 │   │   │   └── summarizationService.ts
 │   │   ├── types/
