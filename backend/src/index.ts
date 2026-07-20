@@ -47,28 +47,22 @@ function bootstrap() {
     });
   });
 
-  // POST /capture now requires a verified Firebase ID token (Sub-step C.1)
   app.use(requireFirebaseAuth, captureRouter);
 
-  // GET /selector-config/current (Sub-step D.3) - closes the read-side gap
-  // left by TZ specifying only POST /selector-config/refresh (publish)
   app.use(requireFirebaseAuth, selectorConfigRouter);
 
-  // POST /handoff (Sub-step E.2) - Cross-Chat Handoff per TZ section 3.3
   app.use(requireFirebaseAuth, handoffRouter);
 
-  // GET /context/:chatId (Sub-step E.3) - read-side for resumed sessions
   app.use(requireFirebaseAuth, contextRouter);
 
-  // POST /push/{artifactId} (Sub-step F.3) - QA gate + commit to session branch
   app.post("/push/:artifactId", requireFirebaseAuth, qaGateAndPushArtifact);
 
   app.get("/", (req: Request, res: Response) => {
     res.status(200).json({
       service: "pnb-backend",
-      status: "skeleton+capture+auth+firestore+handoff+context",
+      status: "skeleton+capture+auth+firestore+handoff+context+push+selector-config-refresh",
       trace_id: req.traceId,
-      note: "Push-pipeline (Iteration F) is added in later iterations",
+      note: "Push-pipeline and selector-config publish (Iteration F) are complete as of F.4",
     });
   });
 
