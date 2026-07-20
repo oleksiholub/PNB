@@ -1,7 +1,7 @@
 # PNB (Perplexity Neural Bridge)
 
 Реализация по ТЗ `tz-handoff_v4.md`. Данный README отражает состояние
-репозитория после завершения Sub-step F.4 — **Итерация F завершена целиком**.
+репозитория после завершения Sub-step G.1.
 
 ## Статус
 
@@ -10,14 +10,14 @@
 - ✅ Итерация C завершена (C.1–C.2)
 - ✅ Итерация D завершена целиком (D.1–D.5)
 - ✅ Итерация E завершена целиком (E.1–E.3)
-- ✅ **Итерация F завершена целиком (F.1–F.4)**:
-  - F.1 — GitHub App authentication service
-  - F.2 — `githubBranchService.ts`
-  - F.3 — QA gate + Git write (`POST /push/:artifactId`)
-  - **F.4 — `POST /selector-config/refresh`**: закрывает последний пробел
-    в API-контракте (публикация selector-config, а не только чтение
-    из D.3), с той же структурной валидацией, что применяется на стороне
-    extension, и с `version` как идемпотентным ключом публикации
+- ✅ Итерация F завершена целиком (F.1–F.4)
+- 🔶 Итерация G в процессе:
+  - **G.1 — Cloud Build trigger + CI reporting**: `cloudbuild.yaml`
+    (install → build → test → report), `gcloud builds triggers create`
+    provisioning script (`infra/create_cloud_build_trigger.sh`),
+    `POST /ci-callback` за `requireGoogleServiceAuth` — первый реальный
+    потребитель этого middleware, forward-provisioned ещё в C.2
+  - G.2 — авто-merge при зелёном CI, `REQUIRES_REVIEW` при конфликте — впереди
 
 ## ⚠️ Открытые компромиссы, требующие внимания
 
@@ -34,18 +34,20 @@
    the TZ**: uses `content_hash + target_branch + push_status` as the
    durable deduplication key instead of a dedicated commit-SHA field.
 8. **`handoff_trigger_markers` enforcement scope for selector-config
-   publish (F.4) not fully specified in the TZ**: mirroring the
-   extension-side validator, this field is present in the TZ's example
-   JSON but not enforced as strictly required by
-   `SelectorConfigPayloadSchema` on the backend — a deliberate, disclosed
-   parity choice rather than a stricter independent backend rule that
-   could reject configs the extension itself would accept.
-9. **Bugfix note (discovered during F.4)**: the original D.3 GET handler
-   logged non-existent `ResultStatus` values (`"PENDING"`, `"OK"`,
-   `"NOT_FOUND"`, `"ERROR"`); this was corrected in-place to use only the
-   three values defined in `types/logging.ts` (`ACCEPTED`,
-   `VALIDATION_FAILED`, `INTERNAL_ERROR`), fixing a latent TypeScript
-   type-safety gap alongside the new F.4 code in the same file.
+   publish (F.4) not fully specified in the TZ**: mirrors the
+   extension-side validator's non-strict treatment of this field.
+9. **CI-result-to-artifact correlation granularity (G.1) not specified in
+   the TZ**: Cloud Build's trigger event carries only a branch name, not
+   a PNB `artifact_id`, so `POST /ci-callback` applies the CI outcome to
+   ALL `code_artifacts` currently at `push_status: PUSHED_NO_CI` on the
+   reported `target_branch`. This is the only interpretation consistent
+   with "one CI run per branch push," but it is an explicit
+   interpretation, not something the TZ states directly.
+10. **`REPOSITORY_CONNECTION` / `BACKEND_SERVICE_URL` placeholders (G.1)
+    are deployment-specific and left as `REPLACE_ME_*` values in
+    `infra/create_cloud_build_trigger.sh` and `cloudbuild.yaml`
+    substitutions** — the TZ does not name these, consistent with the
+    same pattern already applied to `GITHUB_REPO_OWNER`/`NAME` in F.2.
 
 ## Итог по браузерному риску (D.1–D.2)
 
@@ -54,49 +56,32 @@
 
 ## Структура проекта
 
-- `backend/src/routes/selectorConfig.ts` — `GET /selector-config/current`
-  (D.3, bugfixed logging) и **`POST /selector-config/refresh`** (F.4):
-  публикация новой selector-config версии, обновление указателя
-  `configs/selectors/versions/current` в одной batched-транзакции.
-- `backend/src/schemas/selectorConfig.ts` — Zod-схема структурной
-  валидации selector-config payload, зеркалирующая клиентский валидатор
-  extension (F.4).
-- `backend/src/types/logging.ts` — добавлены `selector_config_fetch`,
-  `selector_config_publish` в `OperationType` (F.4).
-- `backend/src/routes/push.ts` — `POST /push/:artifactId`: QA gate,
-  branch provisioning, Git blob/tree/commit write, `push_status` update (F.3).
-- `backend/src/services/githubBranchService.ts` — `ensureSessionBranch()`
-  for `auto/<session_id>` with 422-race idempotency (F.2).
-- `backend/src/config/env.ts` — `GITHUB_REPO_OWNER`, `GITHUB_REPO_NAME`,
-  `GITHUB_DEFAULT_BRANCH`, plus F.1 vars (F.1/F.2).
-- `backend/.env.example` — GitHub App and repository coordinate placeholders.
-- `backend/src/services/githubAppAuth.ts` — GitHub App auth, RS256 JWT,
-  installation access token (F.1).
+- `cloudbuild.yaml` — install → build → test → report pipeline (G.1).
+- `infra/create_cloud_build_trigger.sh` — provisions `pnb-auto-branch-ci`
+  trigger on `^auto/.*$` (G.1); merge policy deferred to G.2.
+- `backend/src/routes/ciCallback.ts` — `POST /ci-callback` (G.1).
+- `backend/src/schemas/ciCallback.ts` — Zod schema for CI-callback (G.1).
+- `backend/src/models/types.ts` — `ci_build_id`/`ci_commit_sha` fields (G.1).
+- `backend/src/middleware/serviceAuth.ts` — `requireGoogleServiceAuth`
+  now mounted on `/ci-callback` (G.1).
+- `firestore.indexes.json` — composite index `(target_branch, push_status)` (G.1).
+- `backend/src/routes/selectorConfig.ts` — GET/POST selector-config (D.3/F.4).
+- `backend/src/schemas/selectorConfig.ts` — structural validation (F.4).
+- `backend/src/routes/push.ts` — QA gate + Git write (F.3).
+- `backend/src/services/githubBranchService.ts` — `ensureSessionBranch()` (F.2).
+- `backend/src/config/env.ts` — GitHub App/repo vars; `SERVICE_AUDIENCE`/
+  `TRUSTED_SERVICE_ACCOUNTS` now effectively required (G.1).
+- `backend/src/services/githubAppAuth.ts` — GitHub App auth (F.1).
 - `backend/src/routes/context.ts` — `GET /context/:chatId` (E.3).
 - `backend/src/routes/handoff.ts` — `POST /handoff` (E.2).
-- `backend/src/schemas/handoff.ts` — Zod-scheme for `/handoff` (E.2).
-- `backend/src/index.ts` — mounted routers; `/` status string now
-  reflects push+selector-config-refresh completion (F.4).
-- `backend/src/services/summarizationService.ts` — LangGraph.js pipeline (E.1).
-- `backend/src/routes/capture.ts` — async summarization trigger (E.1).
-- `extension/src/injection_engine.js` — DOM-injection, jitter (D.5).
-- `extension/src/auth_manager.js` — Firebase ID token (D.5).
-- `extension/src/passive_logging_controller.js` — state machine (D.4).
-- `extension/src/selector_config_manager.js`,
-  `extension/src/config/selector-config.default.json` — selector-config (D.3).
-- `extension/src/dom_observer.js` — `MutationObserver` (D.2).
-- `extension/src/content_script.js`, `service_worker.js` — L1 orchestration (D.1-D.5).
-- `extension/manifest.json` — Manifest V3 (D.1-D.5).
-- `firestore.rules`, `firebase.json`, `firestore.indexes.json`.
-- `backend/src/middleware/firebaseAuth.ts`, `serviceAuth.ts`.
-- `backend/src/services/deadLetterService.ts`.
-- `backend/src/models/types.ts`, `collections.ts`.
-- `backend/src/config/firestore.ts`, `region.ts`.
-- `backend/src/middleware/requestContext.ts`.
-- `backend/src/schemas/capture.ts`.
-- `backend/src/utils/hash.ts`, `ids.ts`.
-- `backend/src/logger.ts`.
-- `backend/Dockerfile`.
+- `backend/src/index.ts` — mounted routers incl. `/ci-callback` (G.1).
+- `backend/src/services/summarizationService.ts` — LangGraph.js (E.1).
+- `extension/src/*` — L1 orchestration, selector-config, auth (D.1-D.5).
+- `firestore.rules`, `firebase.json`, `backend/src/middleware/firebaseAuth.ts`,
+  `backend/src/services/deadLetterService.ts`, `backend/src/models/collections.ts`,
+  `backend/src/config/firestore.ts`, `region.ts`, `requestContext.ts`,
+  `backend/src/schemas/capture.ts`, `handoff.ts`, `backend/src/utils/hash.ts`,
+  `ids.ts`, `backend/src/logger.ts`, `backend/Dockerfile`.
 
 ## Дерево файлов и папок PNB
 
@@ -125,12 +110,14 @@ PNB/
 │   │   │   └── types.ts
 │   │   ├── routes/
 │   │   │   ├── capture.ts
+│   │   │   ├── ciCallback.ts
 │   │   │   ├── context.ts
 │   │   │   ├── handoff.ts
 │   │   │   ├── push.ts
 │   │   │   └── selectorConfig.ts
 │   │   ├── schemas/
 │   │   │   ├── capture.ts
+│   │   │   ├── ciCallback.ts
 │   │   │   ├── handoff.ts
 │   │   │   └── selectorConfig.ts
 │   │   ├── services/
@@ -144,6 +131,7 @@ PNB/
 │   │       ├── hash.ts
 │   │       └── ids.ts
 │   └── tsconfig.json
+├── cloudbuild.yaml
 ├── docs/
 │   └── architecture-notes.md
 ├── extension/
@@ -162,4 +150,6 @@ PNB/
 │       └── service_worker.js
 ├── firebase.json
 ├── firestore.indexes.json
-└── firestore.rules
+├── firestore.rules
+└── infra/
+    └── create_cloud_build_trigger.sh
