@@ -38,6 +38,16 @@
  * This module therefore treats `content_hash` + `target_branch` +
  * `push_status` as the durable deduplication key, rather than inventing a
  * new schema field the TZ never requested.
+ *
+ * Sub-step H.4 addition: both Firestore writes in this file (QA-gate
+ * rejection and the PUSHED_NO_CI write after a successful push) now call
+ * getQuotaGovernor().recordWrite(), closing one of the two gaps the H.3
+ * README explicitly flagged ("QuotaGovernor.recordWrite() integration
+ * into push.ts, ciCallback.ts... for a fuller picture of write load" -
+ * H.3 open compromise list, item referencing H.4). This does NOT change
+ * push/QA-gate behavior in any way - recordWrite() only feeds
+ * QuotaGovernor's per-instance sliding window used by capture.ts's
+ * quota-mode branching; it has no read path back into this file.
  */
 import { Request, Response } from "express";
 import { codeArtifactsCollection } from "../models/collections";
@@ -45,6 +55,7 @@ import { CodeArtifactDocument, PushStatus } from "../models/types";
 import { loadGithubAppCredentialsFromEnv, getInstallationAccessToken } from "../services/githubAppAuth";
 import { ensureSessionBranch } from "../services/githubBranchService";
 import { withLogContext } from "../logger";
+import { getQuotaGovernor } from "../services/quotaGovernor";
 
 const GITHUB_API_BASE = "https://api.github.com";
 
@@ -252,6 +263,11 @@ export async function qaGateAndPushArtifact(req: Request, res: Response): Promis
       },
       { merge: true }
     );
+    // Sub-step H.4: this write was previously invisible to QuotaGovernor
+    // (H.3) - push.ts is one of the two Firestore-writing paths the H.3
+    // README explicitly flagged as not yet instrumented. See file header
+    // Sub-step H.4 note for the full disclosure.
+    getQuotaGovernor().recordWrite();
 
     withLogContext({
       trace_id: traceId,
@@ -340,6 +356,10 @@ export async function qaGateAndPushArtifact(req: Request, res: Response): Promis
     },
     { merge: true }
   );
+  // Sub-step H.4: instrument the second (and main) Firestore write in
+  // this file so QuotaGovernor's per-instance write-pressure window
+  // reflects push-path load, not just capture.ts's writes.
+  getQuotaGovernor().recordWrite();
 
   withLogContext({
     trace_id: traceId,
