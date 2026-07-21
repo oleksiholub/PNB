@@ -47,6 +47,14 @@
  * in githubMergeService.ts (see that file's own H.0 fix note) - the
  * previous single-argument call was a genuine bug that would not have
  * compiled once the callee required traceId.
+ *
+ * Sub-step H.4 addition: both batch.commit() calls (CI_FAILED branch and
+ * SUCCESS/merge branch) now call getQuotaGovernor().recordWrite() once
+ * per document actually written in that batch (matching.size writes),
+ * closing the second of the two gaps the H.3 README explicitly flagged
+ * as not yet instrumented. This is purely observational bookkeeping for
+ * QuotaGovernor's per-instance sliding window - it does not change
+ * ci-callback's merge/CI-failure behavior in any way.
  */
 import { Request, Response } from "express";
 import { ZodError } from "zod";
@@ -54,6 +62,7 @@ import { CiCallbackSchema } from "../schemas/ciCallback";
 import { codeArtifactsCollection } from "../models/collections";
 import { withLogContext } from "../logger";
 import { mergeSessionBranchIntoDefault } from "../services/githubMergeService";
+import { getQuotaGovernor } from "../services/quotaGovernor";
 
 export async function handleCiCallback(req: Request, res: Response): Promise<void> {
   const traceId = req.traceId;
@@ -125,6 +134,16 @@ export async function handleCiCallback(req: Request, res: Response): Promise<voi
         );
       }
       await batch.commit();
+      // Sub-step H.4: this batch.commit() performs matching.size
+      // individual document writes within one Firestore transaction -
+      // QuotaGovernor's window counts write OPERATIONS, so this records
+      // one recordWrite() call per document actually written, matching
+      // how capture.ts's single-document writes are counted, rather than
+      // treating a multi-document batch as a single unit of write
+      // pressure it is not.
+      for (let i = 0; i < matching.size; i += 1) {
+        getQuotaGovernor().recordWrite();
+      }
 
       withLogContext({
         trace_id: traceId,
@@ -166,6 +185,11 @@ export async function handleCiCallback(req: Request, res: Response): Promise<voi
       batch.set(doc.ref, updateFields, { merge: true });
     }
     await batch.commit();
+    // Sub-step H.4: same per-document recordWrite() accounting as the
+    // FAILURE branch above.
+    for (let i = 0; i < matching.size; i += 1) {
+      getQuotaGovernor().recordWrite();
+    }
 
     withLogContext({
       trace_id: traceId,
