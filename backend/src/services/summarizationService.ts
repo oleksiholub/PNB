@@ -77,12 +77,30 @@ interface GraphState {
 }
 
 const StateAnnotation = Annotation.Root({
-  rawHistoryRefs: Annotation<string[]>(),
-  entities: Annotation<string[]>({ default: () => [] }),
-  actionItems: Annotation<string[]>({ default: () => [] }),
-  summary: Annotation<string>({ default: () => "" }),
-  valid: Annotation<boolean>({ default: () => false }),
-  invalidReason: Annotation<string | undefined>({ default: () => undefined }),
+rawHistoryRefs: Annotation<string[]>({
+value: (current, update) => update ?? current,
+default: () => [],
+}),
+entities: Annotation<string[]>({
+value: (current, update) => update ?? current,
+default: () => [],
+}),
+actionItems: Annotation<string[]>({
+value: (current, update) => update ?? current,
+default: () => [],
+}),
+summary: Annotation({
+value: (current, update) => update ?? current,
+default: () => "",
+}),
+valid: Annotation({
+value: (current, update) => update ?? current,
+default: () => false,
+}),
+invalidReason: Annotation<string | undefined>({
+value: (current, update) => update ?? current,
+default: () => undefined,
+}),
 });
 
 const CAPITALIZED_WORD_RE = /\b[A-ZА-Я][a-zа-я]{2,}\b/g;
@@ -218,8 +236,11 @@ function pickCompressionLevel(
     : refCountLevel;
 }
 
-export function shouldTriggerSummarization(refCount: number): boolean {
-  return refCount > 0 && refCount % SUMMARIZATION_TRIGGER_EVERY_N_TURNS === 0;
+export function shouldTriggerSummarization(
+refCount: number,
+triggerEvery: number = SUMMARIZATION_TRIGGER_EVERY_N_TURNS
+): boolean {
+  return refCount > 0 && refCount % triggerEvery === 0;
 }
 
 type AttemptResult =
@@ -257,8 +278,10 @@ async function runSummarizationAttempt(
 }
 
 export async function summarizeAndUpdateMemory(
-  chatId: string,
-  traceId: string
+chatId: string,
+traceId: string,
+sessionId?: string,
+ownerUid?: string
 ): Promise<{ updated: boolean; usedFallback: boolean }> {
   const docRef = contextCollection().doc(chatId);
 
