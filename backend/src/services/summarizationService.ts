@@ -86,9 +86,7 @@ const StateAnnotation = Annotation.Root({
 });
 
 const CAPITALIZED_WORD_RE = /\b[A-ZА-Я][a-zа-я]{2,}\b/g;
-const ACTION_VERB_RE =
-  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?
-]{0,120}/gi;
+const ACTION_VERB_RE = /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?\n]{0,120}/gi;
 
 function extractEntitiesNode(state: GraphState): Partial<GraphState> {
   const joined = state.rawHistoryRefs.join("
