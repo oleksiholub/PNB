@@ -337,17 +337,15 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       "";
 
     const quotaGovernor = getQuotaGovernor();
-    const quotaMode = quotaGovernor.getMode();
+    const quotaMode = quotaGovernor.getQuotaMode();
 
     if (quotaMode === "aggressive" || quotaMode === "deferred") {
-      await enqueueBatchedCapture({
-        chatId: chat_id,
-        sessionId: session_id,
-        traceId,
-        ownerUid,
-        rawRef,
-        nowIso,
-      });
+        await enqueueBatchedCapture(chat_id, traceId, {
+    last_interaction: nowIso,
+    memory_blob: {
+      raw_history_refs: [rawRef],
+    } as Partial<ChatContextDocument["memory_blob"]>,
+  });
 
       withLogContext({
         trace_id: traceId,
@@ -463,12 +461,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       quotaMode === "normal" &&
       shouldTriggerSummarization(refCountLocal, effectiveTriggerEvery)
     ) {
-      summarizeAndUpdateMemory({
-        chatId: chat_id,
-        sessionId: session_id,
-        traceId,
-        ownerUid,
-      }).catch((summarizationErr) => {
+     summarizeAndUpdateMemory(chat_id, traceId, session_id, ownerUid).catch((summarizationErr) => {
         withLogContext({
           trace_id: traceId,
           chat_id,
@@ -485,12 +478,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       quotaMode === "aggressive" &&
       shouldTriggerSummarization(refCountLocal, effectiveTriggerEvery)
     ) {
-      summarizeAndUpdateMemory({
-        chatId: chat_id,
-        sessionId: session_id,
-        traceId,
-        ownerUid,
-      }).catch((summarizationErr) => {
+        summarizeAndUpdateMemory(chat_id, traceId, session_id, ownerUid).catch((summarizationErr) => {
         withLogContext({
           trace_id: traceId,
           chat_id,
