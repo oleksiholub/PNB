@@ -87,17 +87,20 @@ const StateAnnotation = Annotation.Root({
 
 const CAPITALIZED_WORD_RE = /\b[A-ZА-Я][a-zа-я]{2,}\b/g;
 const ACTION_VERB_RE =
-  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?\n]{0,120}/gi;
+  /\b(need to|should|must|нужно|следует|необходимо|todo|fixme)\b[^.!?
+]{0,120}/gi;
 
 function extractEntitiesNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join("\n");
+  const joined = state.rawHistoryRefs.join("
+");
   const matches = joined.match(CAPITALIZED_WORD_RE) ?? [];
   const unique = Array.from(new Set(matches)).slice(0, 25);
   return { entities: unique };
 }
 
 function extractActionItemsNode(state: GraphState): Partial<GraphState> {
-  const joined = state.rawHistoryRefs.join("\n");
+  const joined = state.rawHistoryRefs.join("
+");
   const matches = joined.match(ACTION_VERB_RE) ?? [];
   const trimmed = matches.map((m) => m.trim()).slice(0, 15);
   return { actionItems: trimmed };
