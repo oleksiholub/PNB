@@ -340,11 +340,11 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
     const quotaMode = quotaGovernor.getQuotaMode();
 
     if (quotaMode === "aggressive" || quotaMode === "deferred") {
-        await enqueueBatchedCapture(chat_id, traceId, {
+          await enqueueBatchedCapture(chat_id, traceId, {
     last_interaction: nowIso,
     memory_blob: {
       raw_history_refs: [rawRef],
-    } as Partial<ChatContextDocument["memory_blob"]>,
+    },
   });
 
       withLogContext({
@@ -452,10 +452,11 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
       raw_history_refs_count: refCountLocal,
     });
 
-    const summarizationCadenceDivisor =
-      quotaMode === "aggressive" ? 2 : 1;
-    const effectiveTriggerEvery =
-      SUMMARIZATION_TRIGGER_EVERY_N_TURNS * summarizationCadenceDivisor;
+    const quotaModeForCadence: QuotaMode = quotaMode;
+const summarizationCadenceDivisor =
+  quotaModeForCadence === "aggressive" ? 2 : 1;
+const effectiveTriggerEvery =
+  SUMMARIZATION_TRIGGER_EVERY_N_TURNS * summarizationCadenceDivisor;
 
     if (
       quotaMode === "normal" &&
@@ -475,7 +476,7 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
         );
       });
     } else if (
-      quotaMode === "aggressive" &&
+        quotaModeForCadence === "aggressive" &&
       shouldTriggerSummarization(refCountLocal, effectiveTriggerEvery)
     ) {
         summarizeAndUpdateMemory(chat_id, traceId, session_id, ownerUid).catch((summarizationErr) => {
