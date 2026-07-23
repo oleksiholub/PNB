@@ -78,27 +78,27 @@ interface GraphState {
 
 const StateAnnotation = Annotation.Root({
 rawHistoryRefs: Annotation<string[]>({
-value: (current, update) => update ?? current,
+value: (current: string[], update: string[]) => update ?? current,
 default: () => [],
 }),
 entities: Annotation<string[]>({
-value: (current, update) => update ?? current,
+value: (current: string[], update: string[]) => update ?? current,
 default: () => [],
 }),
 actionItems: Annotation<string[]>({
-value: (current, update) => update ?? current,
+value: (current: string[], update: string[]) => update ?? current,
 default: () => [],
 }),
 summary: Annotation({
-value: (current, update) => update ?? current,
+value: (current: string, update: string) => update ?? current,
 default: () => "",
 }),
 valid: Annotation({
-value: (current, update) => update ?? current,
+value: (current: boolean, update: boolean) => update ?? current,
 default: () => false,
 }),
 invalidReason: Annotation<string | undefined>({
-value: (current, update) => update ?? current,
+value: (current: string | undefined, update: string | undefined) => update ?? current,
 default: () => undefined,
 }),
 });
@@ -280,8 +280,8 @@ async function runSummarizationAttempt(
 export async function summarizeAndUpdateMemory(
 chatId: string,
 traceId: string,
-sessionId?: string,
-ownerUid?: string
+_sessionId?: string,
+_ownerUid?: string
 ): Promise<{ updated: boolean; usedFallback: boolean }> {
   const docRef = contextCollection().doc(chatId);
 
