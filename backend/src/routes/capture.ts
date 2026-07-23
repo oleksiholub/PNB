@@ -489,7 +489,7 @@ if (quotaMode === "aggressive" || quotaMode === "deferred") {
       raw_history_refs_count: refCountLocal,
     });
 
-    const quotaModeForCadence: QuotaMode = quotaMode;
+    const quotaModeForCadence = quotaMode as QuotaMode;
 const summarizationCadenceDivisor =
   quotaModeForCadence === "aggressive" ? 2 : 1;
 const effectiveTriggerEvery =
