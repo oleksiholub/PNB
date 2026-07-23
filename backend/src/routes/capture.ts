@@ -90,7 +90,7 @@ import {
   shouldTriggerSummarization,
   SUMMARIZATION_TRIGGER_EVERY_N_TURNS,
 } from "../services/summarizationService";
-import { getQuotaGovernor } from "../services/quotaGovernor";
+import { getQuotaGovernor, QuotaMode } from "../services/quotaGovernor";
 import { enqueueBatchedCapture } from "../services/captureBatchBuffer";
 import { enqueueRetryTask } from "../services/retryQueueService";
 
@@ -326,26 +326,63 @@ captureRouter.post("/capture", async (req: Request, res: Response) => {
   const contextCol = contextCollection();
   try {
     const docRef = contextCol.doc(chat_id);
-    const nowIso = new Date().toISOString();
-    const existingSnap = await docRef.get();
-    let refCountLocal = 0;
-    let mergedMemoryBlobUpdate: Partial<ChatContextDocument["memory_blob"]> = {};
+const nowIso = new Date().toISOString();
+const existingSnap = await docRef.get();
+let refCountLocal = 0;
+let mergedMemoryBlobUpdate: Partial<ChatContextDocument["memory_blob"]> = {};
 
-    const rawRef =
-      ("user_message" in parsed && parsed.user_message) ||
-      ("model_response" in parsed && parsed.model_response) ||
-      "";
+const rawRef =
+  ("user_message" in parsed && parsed.user_message) ||
+  ("model_response" in parsed && parsed.model_response) ||
+  "";
 
-    const quotaGovernor = getQuotaGovernor();
-    const quotaMode = quotaGovernor.getQuotaMode();
+const quotaGovernor = getQuotaGovernor();
+const quotaMode = quotaGovernor.getQuotaMode();
 
-    if (quotaMode === "aggressive" || quotaMode === "deferred") {
-          await enqueueBatchedCapture(chat_id, traceId, {
-    last_interaction: nowIso,
-    memory_blob: {
-      raw_history_refs: [rawRef],
-    },
-  });
+if (quotaMode === "aggressive" || quotaMode === "deferred") {
+  if (existingSnap.exists) {
+    const existingData = existingSnap.data() as ChatContextDocument;
+
+    if (existingData.owner_uid !== ownerUid) {
+      withLogContext({
+        trace_id: traceId,
+        chat_id,
+        session_id,
+        operation_type: "capture_conversation",
+        result_status: "VALIDATION_FAILED",
+        retry_count: 0,
+      }).warn(
+        "chat_id owner_uid mismatch - refusing cross-owner conversation write (batched path)"
+      );
+      res.status(403).json({
+        error: "forbidden",
+        trace_id: traceId,
+        note: "This chat_id belongs to a different owner_uid.",
+      });
+      return;
+    }
+
+    await enqueueBatchedCapture(chat_id, traceId, {
+      last_interaction: nowIso,
+      memory_blob: {
+        ...existingData.memory_blob,
+        raw_history_refs: [...existingData.memory_blob.raw_history_refs, rawRef],
+      },
+    });
+  } else {
+    await enqueueBatchedCapture(chat_id, traceId, {
+      last_interaction: nowIso,
+      memory_blob: {
+        summary: "",
+        entities: [],
+        action_items: [],
+        raw_history_refs: [rawRef],
+        encrypted: false,
+        schema_version: "v1",
+        compression_level: "normal",
+      },
+    });
+  }
 
       withLogContext({
         trace_id: traceId,
